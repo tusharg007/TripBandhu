@@ -60,7 +60,7 @@ TripBandhu models that process as a coordinated graph:
   <tr>
     <td width="50%" valign="top">
       <h3>🗣️ Natural-language route intelligence</h3>
-      Understands requests such as <em>“7 days in Japan from Bangladesh”</em>, explicit routes such as <code>DAC to NRT</code>, destination-only searches, country names, city names, and global-flight queries.
+      Understands requests such as <em>“7 days in Japan from India”</em>, explicit routes such as <code>DAC to NRT</code>, destination-only searches, country names, city names, and global-flight queries.
     </td>
     <td width="50%" valign="top">
       <h3>✈️ Grounded flight research</h3>
@@ -113,7 +113,7 @@ flowchart LR
 
 The flight tool does more than forward a search string. It progressively resolves the traveler’s intent:
 
-1. Detect direct IATA pairs such as `DAC to NRT`.
+1. Detect direct IATA pairs such as `DEL to NRT`.
 2. Parse phrases such as `from Dhaka to Tokyo`, `to Japan from India`, or `flights from Delhi`.
 3. Match preferred city airports and country aliases.
 4. Search the local `airportsdata` catalog when there is no curated match.
@@ -304,7 +304,7 @@ Creates a travel plan or continues an existing thread.
 
 ```json
 {
-  "message": "Plan a 7-day Japan trip from Bangladesh under 2 lakh BDT",
+  "message": "Plan a 7-day Japan trip from India under 2 lakh INR",
   "thread_id": null
 }
 ```
