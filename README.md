@@ -236,7 +236,7 @@ DEFAULT_ORIGIN_IATA="DEL"
 DATABASE_URL="postgresql://user:password@host:5432/database?sslmode=require"
 
 # Optional LangSmith tracing
-LANGSMITH_TRACING="false"
+LANGSMITH_TRACING="true"
 LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
 LANGSMITH_API_KEY="your_langsmith_api_key"
 LANGSMITH_PROJECT="TripBandhu"
