@@ -37,7 +37,7 @@ TripBandhu is deployed on Render and ready to use in the browser—no local inst
 
 Submit a request such as:
 
-> *Plan a complete 7-day Japan trip from India with flights, hotels, sightseeing, and a budget under 2 lakh BDT.*
+> *Plan a complete 7-day Japan trip from India with flights, hotels, sightseeing, and a budget under 2 lakh INR.*
 
 ## 🌍 What is TripBandhu?
 
