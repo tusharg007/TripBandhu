@@ -5,7 +5,15 @@
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
+    <meta name="theme-color" content="#e8b900">
+
+    <meta name="description" content="TripBandhu AI turns one travel idea into flights, hotels and a complete day-by-day itinerary.">
+
     <title>TripBandhu AI</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 
     <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -16,21 +24,91 @@
         <div class="gradient-circle circle-1"></div>
         <div class="gradient-circle circle-2"></div>
         <div class="gradient-circle circle-3"></div>
+
+        <div class="flight-journey" aria-hidden="true">
+            <svg viewBox="0 0 1200 420" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <path
+                        id="flightCurve"
+                        d="M 34 340 C 210 105, 390 348, 584 230 S 870 42, 1050 94"
+                    />
+
+                    <mask id="flightRouteReveal">
+                        <path
+                            class="route-mask"
+                            d="M 34 340 C 210 105, 390 348, 584 230 S 870 42, 1050 94"
+                            pathLength="100"
+                        />
+                    </mask>
+                </defs>
+
+                <path
+                    class="route-dots"
+                    d="M 34 340 C 210 105, 390 348, 584 230 S 870 42, 1050 94"
+                    mask="url(#flightRouteReveal)"
+                />
+
+                <g class="route-cross">
+                    <text x="215" y="187">×</text>
+                    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.16;0.18;0.92;1" dur="14s" repeatCount="indefinite" />
+                </g>
+
+                <g class="route-cross route-cross-small">
+                    <text x="430" y="286">×</text>
+                    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.32;0.34;0.92;1" dur="14s" repeatCount="indefinite" />
+                </g>
+
+                <g class="route-cross">
+                    <text x="674" y="174">×</text>
+                    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.49;0.51;0.92;1" dur="14s" repeatCount="indefinite" />
+                </g>
+
+                <g class="route-cross route-cross-small">
+                    <text x="910" y="88">×</text>
+                    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.63;0.65;0.92;1" dur="14s" repeatCount="indefinite" />
+                </g>
+
+                <g class="destination-marker" transform="translate(1050 94)">
+                    <circle class="destination-pulse" r="31"></circle>
+                    <path d="M0 -25C-15 -25 -25 -14 -25 0C-25 19 0 43 0 43S25 19 25 0C25 -14 15 -25 0 -25Z"></path>
+                    <circle class="destination-core" r="8"></circle>
+                    <text x="-38" y="-39" text-anchor="end">DESTINATION</text>
+                </g>
+
+                <g class="flight-plane">
+                    <circle class="plane-halo" r="25"></circle>
+                    <text x="-18" y="12">✈</text>
+                    <animateMotion
+                        dur="14s"
+                        repeatCount="indefinite"
+                        rotate="auto"
+                        calcMode="linear"
+                        keyPoints="0;1;1"
+                        keyTimes="0;0.76;1"
+                    >
+                        <mpath href="#flightCurve" />
+                    </animateMotion>
+                </g>
+            </svg>
+        </div>
     </div>
 
     <main class="app-container">
 
         <section class="hero-section">
             <div class="badge">
-                ✈️ TripBandhu AI — A Multi-Agent Travel Planner with LangGraph
+                <span class="badge-spark">✦</span>
+                TripBandhu AI
+                <span class="badge-divider"></span>
+                Travel system online
             </div>
 
             <h1>
-                Plan Your Perfect Trip with AI
+                Plan less. <span>Go further.</span>
             </h1>
 
             <p>
-                Search flights, discover hotels, and generate a complete travel itinerary using a multi-agent LangGraph system.
+                One idea in. A complete journey out—live flights, thoughtful stays, and a day-by-day plan shaped by specialist AI agents.
             </p>
         </section>
 
@@ -38,9 +116,10 @@
 
             <div class="card-header">
                 <div>
-                    <h2>Where do you want to go?</h2>
+                    <span class="section-code">TRIP REQUEST / 001</span>
+                    <h2>Build your next escape</h2>
                     <p>
-                        Example: Plan a complete 7 days Japan trip from Bangladesh under 2 lakhs.
+                        Feed the terminal your destination, dates, vibe, and budget. Our agents will map the rest.
                     </p>
                 </div>
 
@@ -53,25 +132,25 @@
             <div class="input-area">
                 <textarea
                     id="userInput"
-                    placeholder="Plan a complete 7 days Japan trip including flights, hotels and sightseeing under 2 lakhs..."
+                    placeholder="> Describe your dream trip here..."
                 ></textarea>
 
                 <button id="sendBtn" onclick="sendMessage()">
-                    <span id="btnText">Generate Plan</span>
+                    <span id="btnText">Generate trip</span>
                     <span id="btnLoader" class="loader hidden"></span>
                 </button>
             </div>
 
             <div class="quick-prompts">
-                <button onclick="setPrompt('Plan a complete 7 days Japan trip from Bangladesh including flights, hotels and sightseeing under 2 lakhs.')">
+                <button onclick="setPrompt('Plan a complete 7 days Japan trip from India including flights, hotels and sightseeing under ₹2 lakh INR.')">
                     Japan Trip
                 </button>
 
-                <button onclick="setPrompt('Plan a 5 days Dubai trip from Dhaka with flights, hotels and sightseeing.')">
+                <button onclick="setPrompt('Plan a 5 days Dubai trip from Delhi with flights, hotels and sightseeing.')">
                     Dubai Trip
                 </button>
 
-                <button onclick="setPrompt('Plan a 7 days Thailand trip from Bangladesh with budget hotels and sightseeing.')">
+                <button onclick="setPrompt('Plan a 7 days Thailand trip from India with budget hotels and sightseeing.')">
                     Thailand Trip
                 </button>
 

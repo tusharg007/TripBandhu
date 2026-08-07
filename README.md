@@ -37,7 +37,7 @@ TripBandhu is deployed on Render and ready to use in the browser—no local inst
 
 Submit a request such as:
 
-> *Plan a complete 7-day Japan trip from Bangladesh with flights, hotels, sightseeing, and a budget under 2 lakh BDT.*
+> *Plan a complete 7-day Japan trip from India with flights, hotels, sightseeing, and a budget under ₹2 lakh INR.*
 
 ## 🌍 What is TripBandhu?
 
@@ -60,7 +60,7 @@ TripBandhu models that process as a coordinated graph:
   <tr>
     <td width="50%" valign="top">
       <h3>🗣️ Natural-language route intelligence</h3>
-      Understands requests such as <em>“7 days in Japan from Bangladesh”</em>, explicit routes such as <code>DAC to NRT</code>, destination-only searches, country names, city names, and global-flight queries.
+      Understands requests such as <em>“7 days in Japan from India”</em>, explicit routes such as <code>DEL to NRT</code>, destination-only searches, country names, city names, and global-flight queries.
     </td>
     <td width="50%" valign="top">
       <h3>✈️ Grounded flight research</h3>
@@ -113,8 +113,8 @@ flowchart LR
 
 The flight tool does more than forward a search string. It progressively resolves the traveler’s intent:
 
-1. Detect direct IATA pairs such as `DAC to NRT`.
-2. Parse phrases such as `from Dhaka to Tokyo`, `to Japan from India`, or `flights from Delhi`.
+1. Detect direct IATA pairs such as `DEL to NRT`.
+2. Parse phrases such as `from Delhi to Tokyo`, `to Japan from India`, or `flights from Delhi`.
 3. Match preferred city airports and country aliases.
 4. Search the local `airportsdata` catalog when there is no curated match.
 5. Use `DEFAULT_ORIGIN_IATA` for destination-only trip requests.
@@ -304,7 +304,7 @@ Creates a travel plan or continues an existing thread.
 
 ```json
 {
-  "message": "Plan a 7-day Japan trip from Bangladesh under 2 lakh BDT",
+  "message": "Plan a 7-day Japan trip from India under ₹2 lakh INR",
   "thread_id": null
 }
 ```
@@ -316,7 +316,7 @@ Creates a travel plan or continues an existing thread.
 ```bash
 curl --request POST http://127.0.0.1:8000/api/travel \
   --header "Content-Type: application/json" \
-  --data '{"message":"Plan a 5-day Dubai trip from Dhaka with hotels and sightseeing."}'
+  --data '{"message":"Plan a 5-day Dubai trip from Delhi with hotels and sightseeing."}'
 ```
 
 #### Response shape
@@ -326,7 +326,7 @@ curl --request POST http://127.0.0.1:8000/api/travel \
   "success": true,
   "thread_id": "user_7e8f...",
   "answer": "# Your Travel Plan...",
-  "flight_results": "Live flights from DAC to DXB...",
+  "flight_results": "Live flights from DEL to DXB...",
   "hotel_results": "1. Hotel result...",
   "itinerary": "Day 1...",
   "llm_calls": 4

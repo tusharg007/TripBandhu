@@ -41,7 +41,6 @@ COUNTRY_ALIASES = {
     "korea": "KR",
     "russia": "RU",
     "vietnam": "VN",
-    "bangladesh": "BD",
     "india": "IN",
     "japan": "JP",
     "china": "CN",
@@ -64,7 +63,6 @@ COUNTRY_ALIASES = {
 
 # Preferred main airport for country-level search
 COUNTRY_MAIN_AIRPORT = {
-    "BD": "DAC",
     "IN": "DEL",
     "JP": "NRT",
     "US": "JFK",
@@ -92,7 +90,6 @@ COUNTRY_MAIN_AIRPORT = {
 
 
 CITY_MAIN_AIRPORT = {
-    "dhaka": "DAC",
     "delhi": "DEL",
     "new delhi": "DEL",
     "mumbai": "BOM",
@@ -221,12 +218,12 @@ def resolve_location_to_iata(location: str):
     Converts country/city/airport/IATA into IATA code.
 
     Examples:
-    Bangladesh -> DAC
-    Japan -> NRT
-    Dhaka -> DAC
-    Tokyo -> NRT
     India -> DEL
+    Japan -> NRT
     Delhi -> DEL
+    Tokyo -> NRT
+    United States -> JFK
+    New York -> JFK
     """
 
     if not location:
@@ -328,8 +325,8 @@ def parse_route(query: str):
 
     Can return:
     None, None  -> global live flights
-    DAC, NRT    -> filtered route
-    DAC, None   -> all flights from DAC
+    DEL, NRT    -> filtered route
+    DEL, None   -> all flights from DEL
     None, NRT   -> all flights to NRT
     """
 
@@ -351,7 +348,7 @@ def parse_route(query: str):
     if any(keyword in q_lower for keyword in global_keywords):
         return None, None
 
-    # Direct IATA code route: DAC to NRT
+    # Direct IATA code route: DEL to NRT
     codes = re.findall(r"\b[A-Z]{3}\b", q)
 
     if len(codes) >= 2:
@@ -537,6 +534,6 @@ def search_flights(query: str, limit: int = 10):
 
 
 if __name__ == "__main__":
-    print(search_flights("Plan a 7 days Japan trip from Bangladesh"))
+    print(search_flights("Plan a 7 days Japan trip from India"))
     print("\n" + "=" * 80 + "\n")
     print(search_flights("all country flight info"))
