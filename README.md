@@ -13,11 +13,31 @@ TripBandhu turns a natural-language travel request into a grounded travel brief 
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4B942?style=for-the-badge)](LICENSE)
 
-[Explore the workflow](#-how-tripbandhu-thinks) · [Run locally](#-run-it-locally) · [Use the API](#-api-reference) · [Deploy with Docker](#-run-with-docker)
+[![Live on Render](https://img.shields.io/badge/Live_on_Render-Open_TripBandhu-46E3B7?style=for-the-badge&logo=render&logoColor=white)](https://tripbandhu.onrender.com)
+
+### [🌐 Launch the live application](https://tripbandhu.onrender.com)
+
+[Try it live](#-try-tripbandhu-live) · [Explore the workflow](#-how-tripbandhu-thinks) · [Run locally](#-run-it-locally) · [Use the API](#-api-reference) · [Deploy with Docker](#-run-with-docker)
 
 </div>
 
 ---
+
+## 🌐 Try TripBandhu live
+
+TripBandhu is deployed on Render and ready to use in the browser—no local installation required.
+
+<div align="center">
+
+### **[Open TripBandhu AI →](https://tripbandhu.onrender.com)**
+
+[Live application](https://tripbandhu.onrender.com) · [Health check](https://tripbandhu.onrender.com/health) · [Interactive API docs](https://tripbandhu.onrender.com/docs)
+
+</div>
+
+Submit a request such as:
+
+> *Plan a complete 7-day Japan trip from Bangladesh with flights, hotels, sightseeing, and a budget under 2 lakh BDT.*
 
 ## 🌍 What is TripBandhu?
 
