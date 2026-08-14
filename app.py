@@ -1,3 +1,4 @@
+import os
 import traceback
 import uvicorn
 from contextlib import asynccontextmanager
@@ -131,11 +132,14 @@ def public_error(code: str, message: str, status_code: int = 500) -> JSONRespons
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse(
+    asset_version = (os.getenv("RENDER_GIT_COMMIT") or "dev")[:12]
+    response = templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={}
+        context={"asset_version": asset_version},
     )
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.post("/api/travel")

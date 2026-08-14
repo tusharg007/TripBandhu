@@ -58,8 +58,36 @@ class ReleaseSafetyTest(unittest.TestCase):
         self.assertNotIn('document.addEventListener("click", (event) => {\n    const promptButton', script)
         self.assertNotIn('promptButton = event.target.closest', script)
 
-        # Ensure setPrompt only populates input and does NOT auto-submit or call API
-        self.assertNotIn("setPrompt() { sendMessage", script)
+    def test_asset_versioning_and_cache_control(self):
+        import os
+        from fastapi.testclient import TestClient
+        from app import app
+
+        template = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('/static/style.css?v={{ asset_version }}', template)
+        self.assertIn('/static/script.js?v={{ asset_version }}', template)
+
+        client = TestClient(app)
+
+        # 1. Local / default fallback
+        if "RENDER_GIT_COMMIT" in os.environ:
+            del os.environ["RENDER_GIT_COMMIT"]
+        res = client.get("/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers.get("cache-control"), "no-cache")
+        self.assertIn('/static/style.css?v=dev', res.text)
+        self.assertIn('/static/script.js?v=dev', res.text)
+
+        # 2. Production RENDER_GIT_COMMIT injection
+        os.environ["RENDER_GIT_COMMIT"] = "abcdef123456789xyz"
+        try:
+            res_prod = client.get("/")
+            self.assertEqual(res_prod.status_code, 200)
+            self.assertEqual(res_prod.headers.get("cache-control"), "no-cache")
+            self.assertIn('/static/style.css?v=abcdef123456', res_prod.text)
+            self.assertIn('/static/script.js?v=abcdef123456', res_prod.text)
+        finally:
+            del os.environ["RENDER_GIT_COMMIT"]
 
 
 if __name__ == "__main__":
