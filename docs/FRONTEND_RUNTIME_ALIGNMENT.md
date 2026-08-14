@@ -87,14 +87,26 @@ The Docker image installs pinned `uv` and verifies `uvx --version` during build 
 
 The Docker build context excludes `.env`, `.env.*`, Git metadata, virtual environments, caches, compiled Python files, logs, local databases, and runtime artifacts while allowing `.env.example`.
 
-## TF1 Debt
+## TF1 Status — RESOLVED in `feat/agentic-core-hardening`
 
-The current graph still uses synchronous LangGraph nodes with `asyncio.run()` and `nest_asyncio` to call async MCP functions. TF0 preserves this behavior to avoid a deep agentic refactor.
+TF1 has been implemented:
 
-TF1 prerequisites:
+- [x] Clean async execution model (no `nest_asyncio`, no `asyncio.run` in graph nodes)
+- [x] `AsyncPostgresSaver` via FastAPI lifespan context manager
+- [x] Structured supervisor output via `SupervisorDecision` Pydantic model
+- [x] Structured guardrail via `GuardrailDecision` Pydantic model
+- [x] Structured `TravelConstraints` extraction
+- [x] `AgentName` enum validation on supervisor output
+- [x] Iterative HITL review loop with revision history and defensive cap
+- [x] Centralized provider timeouts (`asyncio.timeout`)
+- [x] Exception classification and bounded retry via `provider_utils.async_call_provider`
+- [x] LLM call accounting fix (hotel_agent was over-counting)
+- [x] `extract_destination_async` LLM call now counted
 
-- Convert the graph to a clean async execution model.
-- Add a repeat-review loop if revisions should pause for another approval.
-- Add structured supervisor outputs and stronger schema validation.
-- Add broader agent evaluation and provider-failure tests.
-- Add deployment observability for MCP subprocess failures.
+## TF2 Debt
+
+- Streaming SSE for real-time specialist progress
+- Evaluation framework for LLM output quality
+- Observability / OpenTelemetry tracing
+- Rate-limit awareness and exponential backoff for Groq API
+- Multi-destination / multi-segment trip planning

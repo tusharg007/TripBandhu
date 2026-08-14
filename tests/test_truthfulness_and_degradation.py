@@ -1,6 +1,7 @@
 from pathlib import Path
+import asyncio
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from langchain_core.messages import AIMessage
 
 import backend
@@ -18,8 +19,11 @@ class TruthfulnessAndDegradationTest(unittest.TestCase):
         }
 
         # Mock aviation_mcp_call to simulate a tool/uvx failure
-        with patch("backend.aviation_mcp_call", side_effect=RuntimeError("uvx was not found. Install uv and run uvx --version.")):
-            result = backend.flight_agent(state)
+        async def _fail_aviation(tool_name):
+            raise RuntimeError("uvx was not found. Install uv and run uvx --version.")
+
+        with patch("backend.aviation_mcp_call", side_effect=_fail_aviation):
+            result = asyncio.run(backend.flight_agent(state))
 
         # 1. Must set specialist status to DEGRADED
         self.assertEqual(result["specialist_statuses"]["flight_agent"], "DEGRADED")
@@ -41,10 +45,14 @@ class TruthfulnessAndDegradationTest(unittest.TestCase):
 
         mock_llm = MagicMock()
         mock_llm.invoke.return_value = AIMessage(content="Direct flights available on ANA and JAL")
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Direct flights available on ANA and JAL"))
 
-        with patch("backend.aviation_mcp_call", return_value=["HND", "NRT"]), \
+        async def _mock_aviation(tool_name):
+            return ["HND", "NRT"]
+
+        with patch("backend.aviation_mcp_call", side_effect=_mock_aviation), \
              patch("backend.llm", mock_llm):
-            result = backend.flight_agent(state)
+            result = asyncio.run(backend.flight_agent(state))
 
         self.assertEqual(result["specialist_statuses"]["flight_agent"], "COMPLETED")
         self.assertTrue(result["flight_data_available"])
@@ -53,11 +61,19 @@ class TruthfulnessAndDegradationTest(unittest.TestCase):
     def test_supervisor_marks_unselected_agents_as_not_selected(self):
         state = {"user_query": "What is the weather in Paris?", "llm_calls": 0}
 
-        guardrail_json = '{"allowed": true, "reason": ""}'
-        supervisor_json = '{"selected_agents": ["weather_agent", "itinerary_agent"], "trip_constraints": {"destination": "Paris"}, "reasoning": "Selected weather and itinerary specialists."}'
+        from schemas import GuardrailDecision, GuardrailCategory, SupervisorDecision, AgentName, TravelConstraints
 
-        with patch("backend._llm_text", side_effect=[guardrail_json, supervisor_json]):
-            result = backend.supervisor_agent(state)
+        allowed = GuardrailDecision(allowed=True, reason="travel", category=GuardrailCategory.TRAVEL)
+        decision = SupervisorDecision(
+            selected_agents=[AgentName.WEATHER, AgentName.ITINERARY],
+            constraints=TravelConstraints(destination="Paris"),
+            reasoning="Selected weather and itinerary specialists.",
+        )
+
+        with patch("backend._llm_guardrail") as mg, patch("backend._llm_supervisor") as ms:
+            mg.ainvoke = AsyncMock(return_value=allowed)
+            ms.ainvoke = AsyncMock(return_value=decision)
+            result = asyncio.run(backend.supervisor_agent(state))
 
         self.assertEqual(result["specialist_statuses"]["weather_agent"], "SELECTED")
         self.assertEqual(result["specialist_statuses"]["itinerary_agent"], "SELECTED")

@@ -1,7 +1,9 @@
+
+"""TF1: API Contract tests matching FastAPI request signatures."""
 import asyncio
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock, MagicMock
 
 import app
 
@@ -34,6 +36,8 @@ SAMPLE_RUN_RESPONSE = {
     "guardrail_reason": "",
     "approved": None,
     "human_feedback": "",
+    "review_iteration": 0,
+    "review_limit_reached": False,
     "llm_calls": 4,
 }
 
@@ -61,15 +65,24 @@ SAMPLE_RESUME_RESPONSE = {
     "guardrail_reason": "",
     "approved": False,
     "human_feedback": "Add slower pacing.",
+    "review_iteration": 1,
+    "review_limit_reached": False,
     "llm_calls": 5,
 }
 
 
+def _make_mock_request():
+    req = MagicMock()
+    req.app.state.travel_service = None
+    return req
+
+
 class ApiContractTest(unittest.TestCase):
     def test_initial_response_contains_agentic_contract(self):
-        with patch("app.run_travel_agent", return_value=SAMPLE_RUN_RESPONSE):
+        with patch("app.run_travel_agent", new=AsyncMock(return_value=SAMPLE_RUN_RESPONSE)):
             response = asyncio.run(
                 app.travel_planner(
+                    _make_mock_request(),
                     app.TravelRequest(message="Plan Tokyo from Delhi")
                 )
             )
@@ -86,6 +99,7 @@ class ApiContractTest(unittest.TestCase):
     def test_resume_endpoint_validates_thread_id(self):
         response = asyncio.run(
             app.resume_travel_planner(
+                _make_mock_request(),
                 app.TravelResumeRequest(thread_id=" ", approved=True)
             )
         )
@@ -96,9 +110,10 @@ class ApiContractTest(unittest.TestCase):
         self.assertEqual(payload["error_code"], "INVALID_REQUEST")
 
     def test_resume_endpoint_delegates_and_returns_contract(self):
-        with patch("app.resume_travel_agent", return_value=SAMPLE_RESUME_RESPONSE):
+        with patch("app.resume_travel_agent", new=AsyncMock(return_value=SAMPLE_RESUME_RESPONSE)):
             response = asyncio.run(
                 app.resume_travel_planner(
+                    _make_mock_request(),
                     app.TravelResumeRequest(
                         thread_id="user_test",
                         approved=False,
@@ -116,12 +131,13 @@ class ApiContractTest(unittest.TestCase):
             self.assertIn("specialist_statuses", payload)
 
     def test_unexpected_errors_return_safe_public_message(self):
-        def failing_run(user_input, thread_id=None):
+        async def failing_run(user_input, thread_id=None, service=None):
             raise RuntimeError("DATABASE_URL leaked from F:\\TripBandhu\\.env")
 
         with patch("app.run_travel_agent", side_effect=failing_run):
             response = asyncio.run(
                 app.travel_planner(
+                    _make_mock_request(),
                     app.TravelRequest(message="Plan Tokyo from Delhi")
                 )
             )
