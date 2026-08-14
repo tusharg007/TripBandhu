@@ -2,90 +2,43 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
     <meta name="theme-color" content="#e8b900">
+    <meta name="description" content="TripBandhu coordinates travel specialist agents with human review.">
 
-    <meta name="description" content="TripBandhu AI turns one travel idea into flights, hotels and a complete day-by-day itinerary.">
-
-    <title>TripBandhu AI</title>
+    <title>TripBandhu Agentic Travel Intelligence</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-
     <link rel="stylesheet" href="/static/style.css">
 </head>
 
 <body>
-
-    <div class="page-bg">
-        <div class="gradient-circle circle-1"></div>
-        <div class="gradient-circle circle-2"></div>
-        <div class="gradient-circle circle-3"></div>
-
-        <div class="flight-journey" aria-hidden="true">
+    <div class="page-bg" aria-hidden="true">
+        <div class="flight-journey">
             <svg viewBox="0 0 1200 420" xmlns="http://www.w3.org/2000/svg">
                 <defs>
-                    <path
-                        id="flightCurve"
-                        d="M 34 340 C 210 105, 390 348, 584 230 S 870 42, 1050 94"
-                    />
-
+                    <path id="flightCurve" d="M 34 340 C 210 105, 390 348, 584 230 S 870 42, 1050 94" />
                     <mask id="flightRouteReveal">
-                        <path
-                            class="route-mask"
-                            d="M 34 340 C 210 105, 390 348, 584 230 S 870 42, 1050 94"
-                            pathLength="100"
-                        />
+                        <path class="route-mask" d="M 34 340 C 210 105, 390 348, 584 230 S 870 42, 1050 94" pathLength="100" />
                     </mask>
                 </defs>
-
-                <path
-                    class="route-dots"
-                    d="M 34 340 C 210 105, 390 348, 584 230 S 870 42, 1050 94"
-                    mask="url(#flightRouteReveal)"
-                />
-
-                <g class="route-cross">
-                    <text x="215" y="187">×</text>
-                    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.16;0.18;0.92;1" dur="14s" repeatCount="indefinite" />
-                </g>
-
-                <g class="route-cross route-cross-small">
-                    <text x="430" y="286">×</text>
-                    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.32;0.34;0.92;1" dur="14s" repeatCount="indefinite" />
-                </g>
-
-                <g class="route-cross">
-                    <text x="674" y="174">×</text>
-                    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.49;0.51;0.92;1" dur="14s" repeatCount="indefinite" />
-                </g>
-
-                <g class="route-cross route-cross-small">
-                    <text x="910" y="88">×</text>
-                    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.63;0.65;0.92;1" dur="14s" repeatCount="indefinite" />
-                </g>
-
+                <path class="route-dots" d="M 34 340 C 210 105, 390 348, 584 230 S 870 42, 1050 94" mask="url(#flightRouteReveal)" />
+                <text class="route-cross" x="215" y="187">x</text>
+                <text class="route-cross route-cross-small" x="430" y="286">x</text>
+                <text class="route-cross" x="674" y="174">x</text>
+                <text class="route-cross route-cross-small" x="910" y="88">x</text>
                 <g class="destination-marker" transform="translate(1050 94)">
                     <circle class="destination-pulse" r="31"></circle>
                     <path d="M0 -25C-15 -25 -25 -14 -25 0C-25 19 0 43 0 43S25 19 25 0C25 -14 15 -25 0 -25Z"></path>
                     <circle class="destination-core" r="8"></circle>
                     <text x="-38" y="-39" text-anchor="end">DESTINATION</text>
                 </g>
-
                 <g class="flight-plane">
                     <circle class="plane-halo" r="25"></circle>
-                    <text x="-18" y="12">✈</text>
-                    <animateMotion
-                        dur="14s"
-                        repeatCount="indefinite"
-                        rotate="auto"
-                        calcMode="linear"
-                        keyPoints="0;1;1"
-                        keyTimes="0;0.76;1"
-                    >
+                    <text x="-10" y="12">></text>
+                    <animateMotion dur="14s" repeatCount="indefinite" rotate="auto" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.76;1">
                         <mpath href="#flightCurve" />
                     </animateMotion>
                 </g>
@@ -93,116 +46,123 @@
         </div>
     </div>
 
-    <main class="app-container">
-
-        <section class="hero-section">
-            <div class="badge">
-                <span class="badge-spark">✦</span>
-                TripBandhu AI
-                <span class="badge-divider"></span>
-                Travel system online
-            </div>
-
-            <h1>
-                Plan less. <span>Go further.</span>
-            </h1>
-
-            <p>
-                One idea in. A complete journey out—live flights, thoughtful stays, and a day-by-day plan shaped by specialist AI agents.
+    <main class="app-shell">
+        <section class="hero-section" aria-labelledby="heroTitle">
+            <p class="eyebrow">TripBandhu</p>
+            <h1 id="heroTitle">Agentic Travel Intelligence</h1>
+            <p class="hero-copy">
+                Specialist agents reason through flights, hotels, weather, budget, and itinerary planning, then pause for your review before the final plan is written.
             </p>
         </section>
 
-        <section class="planner-card">
-
-            <div class="card-header">
+        <section class="console-panel" aria-labelledby="requestTitle">
+            <div class="panel-header">
                 <div>
-                    <span class="section-code">TRIP REQUEST / 001</span>
-                    <h2>Build your next escape</h2>
-                    <p>
-                        Feed the terminal your destination, dates, vibe, and budget. Our agents will map the rest.
-                    </p>
+                    <span class="section-code">TRIP REQUEST / HUMAN IN CONTROL</span>
+                    <h2 id="requestTitle">Build a fresh travel brief</h2>
                 </div>
-
-                <div class="status-pill">
-                    <span class="status-dot"></span>
-                    Online
+                <div class="session-actions">
+                    <button type="button" class="secondary-action" id="newTripBtn">New Trip</button>
+                    <span class="status-pill"><span class="status-dot"></span>Online</span>
                 </div>
             </div>
 
-            <div class="input-area">
-                <textarea
-                    id="userInput"
-                    placeholder="> Describe your dream trip here..."
-                ></textarea>
+            <div class="request-grid">
+                <label class="sr-only" for="userInput">Travel request</label>
+                <textarea id="userInput" placeholder="Plan a 7 day Japan trip from Delhi with flights, hotels, weather, budget, and sightseeing under INR 2 lakh."></textarea>
 
-                <button id="sendBtn" onclick="sendMessage()">
-                    <span id="btnText">Generate trip</span>
-                    <span id="btnLoader" class="loader hidden"></span>
+                <button type="button" id="sendBtn">
+                    <span id="btnText">Generate Trip</span>
+                    <span id="btnLoader" class="loader hidden" aria-hidden="true"></span>
                 </button>
             </div>
 
-            <div class="quick-prompts">
-                <button onclick="setPrompt('Plan a complete 7 days Japan trip from India including flights, hotels and sightseeing under ₹2 lakh INR.')">
-                    Japan Trip
-                </button>
-
-                <button onclick="setPrompt('Plan a 5 days Dubai trip from Delhi with flights, hotels and sightseeing.')">
-                    Dubai Trip
-                </button>
-
-                <button onclick="setPrompt('Plan a 7 days Thailand trip from India with budget hotels and sightseeing.')">
-                    Thailand Trip
-                </button>
-
-                <button onclick="setPrompt('Give me all country flight info.')">
-                    Global Flights
-                </button>
+            <div class="quick-prompts" aria-label="Quick prompts">
+                <button type="button" data-prompt="Plan a complete 7 day Japan trip from Delhi including flights, hotels, weather, budget, and sightseeing under INR 2 lakh.">Japan</button>
+                <button type="button" data-prompt="Plan a 5 day Dubai trip from Delhi with flights, hotels, weather, and sightseeing.">Dubai</button>
+                <button type="button" data-prompt="Plan a 7 day Thailand trip from India with budget hotels, weather advice, and sightseeing.">Thailand</button>
+                <button type="button" data-prompt="Create a budget-first 4 day Goa trip from Delhi with hotels and weather guidance.">Goa</button>
             </div>
-
         </section>
 
-        <section id="resultSection" class="result-section hidden">
+        <section id="loadingPanel" class="loading-panel hidden" aria-live="polite">
+            <div class="loader large-loader" aria-hidden="true"></div>
+            <p>Planning with selected travel specialists...</p>
+        </section>
 
+        <section id="errorBox" class="error-box hidden" aria-live="assertive"></section>
+
+        <section id="workflowSection" class="workflow-grid hidden" aria-label="Agentic workflow results">
+            <article class="workflow-panel agent-panel">
+                <div class="panel-kicker">Execution</div>
+                <h2>Agent Panel</h2>
+                <div id="agentList" class="agent-list"></div>
+            </article>
+
+            <article class="workflow-panel supervisor-panel">
+                <div class="panel-kicker">Supervisor</div>
+                <h2>Decision</h2>
+                <div id="guardrailBox" class="guardrail-box"></div>
+                <div id="constraintsGrid" class="constraints-grid"></div>
+                <div class="reasoning-box">
+                    <h3>Reasoning</h3>
+                    <p id="supervisorReasoning">No supervisor decision yet.</p>
+                </div>
+            </article>
+        </section>
+
+        <section id="specialistSection" class="specialist-section hidden" aria-labelledby="specialistTitle">
+            <div class="section-heading">
+                <div>
+                    <span class="section-code">SPECIALIST OUTPUTS</span>
+                    <h2 id="specialistTitle">Travel Intelligence</h2>
+                </div>
+            </div>
+
+            <div id="tabs" class="tabs" role="tablist" aria-label="Specialist outputs"></div>
+            <div id="tabPanel" class="tab-panel" role="tabpanel"></div>
+        </section>
+
+        <section id="reviewSection" class="review-section hidden" aria-labelledby="reviewTitle">
+            <div class="panel-kicker">Human Review</div>
+            <h2 id="reviewTitle">Review required before final plan</h2>
+            <p id="approvalRequest"></p>
+            <div id="draftItinerary" class="markdown-box"></div>
+            <label for="revisionFeedback">Revision feedback</label>
+            <textarea id="revisionFeedback" class="feedback-input" placeholder="Tell the agents what to change before finalizing."></textarea>
+            <div class="review-actions">
+                <button type="button" id="approveBtn">Approve Itinerary</button>
+                <button type="button" id="revisionBtn" class="secondary-action">Request Revision</button>
+            </div>
+        </section>
+
+        <section id="finalSection" class="final-section hidden" aria-labelledby="finalTitle">
             <div class="result-header">
                 <div>
-                    <h2>Your AI Travel Plan</h2>
+                    <span class="section-code">FINAL RESPONSE</span>
+                    <h2 id="finalTitle">Final Travel Plan</h2>
                     <p id="threadInfo">Thread ID: -</p>
                 </div>
-
                 <div class="result-actions">
-                    <button class="copy-btn" onclick="copyResult()">
-                        Copy
-                    </button>
-
-                    <button class="download-btn" onclick="downloadPDF()">
-                        Download PDF
-                    </button>
+                    <button type="button" class="copy-btn" id="copyBtn">Copy</button>
+                    <button type="button" class="download-btn" id="downloadBtn">Download PDF</button>
                 </div>
             </div>
 
             <div id="pdfContent" class="pdf-content">
-                <h1 class="pdf-title">AI Travel Plan</h1>
-                <div id="resultBox" class="result-box"></div>
+                <h1 class="pdf-title">TripBandhu Travel Plan</h1>
+                <div id="resultBox" class="markdown-box"></div>
             </div>
-
         </section>
-
-        <section id="errorBox" class="error-box hidden"></section>
-
     </main>
 
     <footer>
-        Built with FastAPI, LangGraph, Groq, PostgreSQL, Tavily and AviationStack
+        FastAPI, LangGraph, PostgreSQL, Groq, Tavily, AviationStack, OpenWeather, and MCP
     </footer>
 
-    <!-- Markdown Renderer -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
-    <!-- PDF Download Library -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@16.2.1/lib/marked.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-
-    <!-- Your Custom JS -->
     <script src="/static/script.js"></script>
-
 </body>
 </html>

@@ -5,17 +5,17 @@ from pathlib import Path
 from typing import Any
 
 import certifi
-from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from project_config import PROJECT_ROOT, load_project_env
 
 
 # =========================================================
 # Environment setup
 # =========================================================
 
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+BASE_DIR = PROJECT_ROOT
+load_project_env()
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()

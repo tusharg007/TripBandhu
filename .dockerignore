@@ -1,7 +1,40 @@
-# Environments
-.venv
-env/
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Git and editor state
+.git
+.gitignore
+.vscode/
+.idea/
+
+# Python environments and caches
+.venv/
 venv/
+env/
 ENV/
 env.bak/
 venv.bak/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime artifacts
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+db.sqlite3
+db.sqlite3-journal
+htmlcov/
+.coverage
+.coverage.*
+
+# Project-local non-runtime artifacts
+demo.excalidraw

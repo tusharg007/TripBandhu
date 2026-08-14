@@ -1,4 +1,3 @@
-from pathlib import Path
 import traceback
 import uvicorn
 
@@ -8,14 +7,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from backend import run_travel_agent
+from backend import resume_travel_agent, run_travel_agent
+from project_config import PROJECT_ROOT
 
 # This is to allow nested event loops for async calls in FastAPI
 import nest_asyncio
 nest_asyncio.apply()
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = PROJECT_ROOT
 
 app = FastAPI(
     title="TripBandhu - AI Travel Planner",
@@ -42,6 +42,54 @@ class TravelRequest(BaseModel):
     thread_id: str | None = None
 
 
+class TravelResumeRequest(BaseModel):
+    thread_id: str
+    approved: bool
+    feedback: str = ""
+
+
+PUBLIC_CONTRACT_DEFAULTS = {
+    "thread_id": "",
+    "answer": "",
+    "requires_approval": False,
+    "approval_request": "",
+    "flight_results": "",
+    "hotel_results": "",
+    "weather_results": "",
+    "budget_results": "",
+    "itinerary": "",
+    "selected_agents": [],
+    "trip_constraints": {},
+    "supervisor_reasoning": "",
+    "guardrail_allowed": True,
+    "guardrail_reason": "",
+    "approved": None,
+    "human_feedback": "",
+    "llm_calls": 0,
+}
+
+
+def normalize_travel_response(result: dict) -> dict:
+    content = {
+        "success": True,
+    }
+
+    for field, default in PUBLIC_CONTRACT_DEFAULTS.items():
+        content[field] = result.get(field, default)
+
+    return content
+
+
+def public_error(code: str, message: str, status_code: int = 500) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "success": False,
+            "error_code": code,
+            "error": message,
+        },
+    )
+
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -58,12 +106,10 @@ async def travel_planner(request_data: TravelRequest):
         user_message = request_data.message.strip()
 
         if not user_message:
-            return JSONResponse(
+            return public_error(
+                "INVALID_REQUEST",
+                "Message cannot be empty.",
                 status_code=400,
-                content={
-                    "success": False,
-                    "error": "Message cannot be empty."
-                }
             )
 
         result = run_travel_agent(
@@ -71,28 +117,53 @@ async def travel_planner(request_data: TravelRequest):
             thread_id=request_data.thread_id
         )
 
-        return JSONResponse(
-            content={
-                "success": True,
-                "thread_id": result["thread_id"],
-                "answer": result["answer"],
-                "flight_results": result["flight_results"],
-                "hotel_results": result["hotel_results"],
-                "itinerary": result["itinerary"],
-                "llm_calls": result["llm_calls"],
-            }
-        )
+        return JSONResponse(content=normalize_travel_response(result))
 
-    except Exception as e:
-        print("ERROR:", e)
+    except Exception:
+        print("TRAVEL_PLANNING_FAILED")
         traceback.print_exc()
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": str(e)
-            }
+        return public_error(
+            "TRAVEL_PLANNING_FAILED",
+            "Travel planning failed. Please try again in a moment.",
+        )
+
+
+@app.post("/api/travel/resume")
+async def resume_travel_planner(request_data: TravelResumeRequest):
+    try:
+        thread_id = request_data.thread_id.strip()
+        feedback = request_data.feedback.strip()
+
+        if not thread_id:
+            return public_error(
+                "INVALID_REQUEST",
+                "thread_id is required to resume a travel plan.",
+                status_code=400,
+            )
+
+        result = resume_travel_agent(
+            thread_id=thread_id,
+            approved=request_data.approved,
+            feedback=feedback,
+        )
+
+        return JSONResponse(content=normalize_travel_response(result))
+
+    except ValueError:
+        return public_error(
+            "INVALID_REQUEST",
+            "The resume request is invalid.",
+            status_code=400,
+        )
+
+    except Exception:
+        print("RESUME_FAILED")
+        traceback.print_exc()
+
+        return public_error(
+            "RESUME_FAILED",
+            "Travel plan resume failed. Please try again in a moment.",
         )
 
 

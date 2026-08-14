@@ -1,68 +1,294 @@
-let currentThreadId = localStorage.getItem("travel_thread_id") || null;
+const THREAD_STORAGE_KEY = "travel_thread_id";
+
+const agentDefinitions = [
+    ["supervisor", "Supervisor"],
+    ["flight_agent", "Flights"],
+    ["hotel_agent", "Hotels"],
+    ["weather_agent", "Weather"],
+    ["budget_agent", "Budget"],
+    ["itinerary_agent", "Itinerary"],
+    ["human_review", "Human Review"],
+];
+
+const tabDefinitions = [
+    ["flight_results", "Flights"],
+    ["hotel_results", "Hotels"],
+    ["weather_results", "Weather"],
+    ["budget_results", "Budget"],
+    ["itinerary", "Draft Itinerary"],
+];
+
+let currentThreadId = localStorage.getItem(THREAD_STORAGE_KEY) || null;
 let latestAnswerMarkdown = "";
+let latestResponse = null;
+let activeTabKey = "flight_results";
+
+function byId(id) {
+    return document.getElementById(id);
+}
 
 function setPrompt(text) {
-    document.getElementById("userInput").value = text;
+    byId("userInput").value = text;
+    byId("userInput").focus();
+}
+
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+function renderMarkdown(target, markdown) {
+    const content = String(markdown || "").trim();
+
+    if (!content) {
+        target.innerHTML = "<p class=\"muted\">No output returned for this section.</p>";
+        return;
+    }
+
+    if (window.marked && window.DOMPurify) {
+        target.innerHTML = DOMPurify.sanitize(marked.parse(content), {
+            USE_PROFILES: { html: true },
+        });
+        return;
+    }
+
+    target.textContent = content;
+}
+
+function showElement(element, shouldShow) {
+    element.classList.toggle("hidden", !shouldShow);
 }
 
 function setLoading(isLoading) {
-    const sendBtn = document.getElementById("sendBtn");
-    const btnText = document.getElementById("btnText");
-    const btnLoader = document.getElementById("btnLoader");
+    const sendBtn = byId("sendBtn");
+    const btnText = byId("btnText");
+    const btnLoader = byId("btnLoader");
 
     sendBtn.disabled = isLoading;
+    byId("approveBtn").disabled = isLoading;
+    byId("revisionBtn").disabled = isLoading;
 
-    if (isLoading) {
-        btnText.classList.add("hidden");
-        btnLoader.classList.remove("hidden");
-    } else {
-        btnText.classList.remove("hidden");
-        btnLoader.classList.add("hidden");
-    }
+    btnText.classList.toggle("hidden", isLoading);
+    btnLoader.classList.toggle("hidden", !isLoading);
+    showElement(byId("loadingPanel"), isLoading);
 }
 
 function showError(message) {
-    const errorBox = document.getElementById("errorBox");
-
+    const errorBox = byId("errorBox");
     errorBox.textContent = message;
-    errorBox.classList.remove("hidden");
+    showElement(errorBox, true);
 }
 
 function hideError() {
-    const errorBox = document.getElementById("errorBox");
-
-    errorBox.classList.add("hidden");
+    const errorBox = byId("errorBox");
     errorBox.textContent = "";
+    showElement(errorBox, false);
 }
 
-function showResult(answer, threadId) {
-    latestAnswerMarkdown = answer;
+function resetTrip() {
+    currentThreadId = null;
+    latestAnswerMarkdown = "";
+    latestResponse = null;
+    activeTabKey = "flight_results";
+    localStorage.removeItem(THREAD_STORAGE_KEY);
 
-    const resultSection = document.getElementById("resultSection");
-    const resultBox = document.getElementById("resultBox");
-    const threadInfo = document.getElementById("threadInfo");
+    byId("userInput").value = "";
+    byId("revisionFeedback").value = "";
+    hideError();
 
-    if (typeof marked !== "undefined") {
-        resultBox.innerHTML = marked.parse(answer);
-    } else {
-        resultBox.innerText = answer;
+    ["workflowSection", "specialistSection", "reviewSection", "finalSection", "loadingPanel"].forEach((id) => {
+        showElement(byId(id), false);
+    });
+
+    byId("threadInfo").textContent = "Thread ID: -";
+    byId("resultBox").innerHTML = "";
+    byId("draftItinerary").innerHTML = "";
+    byId("agentList").innerHTML = "";
+}
+
+function getAgentState(agentKey, data) {
+    const selected = Array.isArray(data.selected_agents) && data.selected_agents.includes(agentKey);
+
+    if (agentKey === "supervisor") {
+        return data.guardrail_allowed === false ? "completed" : "completed";
     }
 
-    threadInfo.textContent = `Thread ID: ${threadId}`;
+    if (agentKey === "human_review") {
+        if (data.requires_approval) {
+            return "waiting for review";
+        }
 
-    resultSection.classList.remove("hidden");
+        if (data.approved !== null && data.approved !== undefined) {
+            return "completed";
+        }
 
-    resultSection.scrollIntoView({
-        behavior: "smooth",
-        block: "start"
+        return "not selected";
+    }
+
+    if (!selected) {
+        return "not selected";
+    }
+
+    if (agentKey === "flight_agent" && data.flight_results) return "completed";
+    if (agentKey === "hotel_agent" && data.hotel_results) return "completed";
+    if (agentKey === "weather_agent" && data.weather_results) return "completed";
+    if (agentKey === "budget_agent" && data.budget_results) return "completed";
+    if (agentKey === "itinerary_agent" && data.itinerary) return "completed";
+
+    return "selected";
+}
+
+function renderAgents(data) {
+    const agentList = byId("agentList");
+
+    agentList.innerHTML = agentDefinitions.map(([key, label]) => {
+        const state = getAgentState(key, data);
+        return `
+            <div class="agent-row agent-${state.replaceAll(" ", "-")}">
+                <span>${escapeHtml(label)}</span>
+                <strong>${escapeHtml(state)}</strong>
+            </div>
+        `;
+    }).join("");
+}
+
+function renderSupervisor(data) {
+    const guardrailBox = byId("guardrailBox");
+    const allowed = data.guardrail_allowed !== false;
+
+    guardrailBox.className = allowed ? "guardrail-box guardrail-ok" : "guardrail-box guardrail-blocked";
+    guardrailBox.textContent = allowed
+        ? "Travel scope accepted."
+        : (data.guardrail_reason || "This request is outside TripBandhu's travel scope.");
+
+    const constraints = data.trip_constraints || {};
+    const rows = [
+        ["Origin", constraints.origin],
+        ["Destination", constraints.destination],
+        ["Duration", constraints.duration],
+        ["Budget", constraints.budget],
+        ["Travel Style", constraints.travel_style],
+        ["Preferences", Array.isArray(constraints.special_preferences) ? constraints.special_preferences.join(", ") : constraints.special_preferences],
+    ];
+
+    byId("constraintsGrid").innerHTML = rows.map(([label, value]) => `
+        <div class="constraint-item">
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(value || "Not specified")}</strong>
+        </div>
+    `).join("");
+
+    byId("supervisorReasoning").textContent = data.supervisor_reasoning || "No supervisor reasoning returned.";
+}
+
+function renderTabs(data) {
+    const tabs = byId("tabs");
+    const availableTabs = tabDefinitions.filter(([key]) => Boolean(data[key]));
+    const visibleTabs = availableTabs.length ? availableTabs : tabDefinitions;
+
+    if (!visibleTabs.some(([key]) => key === activeTabKey)) {
+        activeTabKey = visibleTabs[0][0];
+    }
+
+    tabs.innerHTML = visibleTabs.map(([key, label]) => `
+        <button type="button" class="${key === activeTabKey ? "active" : ""}" data-tab="${escapeHtml(key)}" role="tab" aria-selected="${key === activeTabKey}">
+            ${escapeHtml(label)}
+        </button>
+    `).join("");
+
+    renderMarkdown(byId("tabPanel"), data[activeTabKey]);
+}
+
+function renderReview(data) {
+    const requiresApproval = Boolean(data.requires_approval);
+    showElement(byId("reviewSection"), requiresApproval);
+
+    if (!requiresApproval) {
+        return;
+    }
+
+    byId("approvalRequest").textContent = data.approval_request || "Please review this draft before finalizing.";
+    renderMarkdown(byId("draftItinerary"), data.itinerary || data.answer);
+}
+
+function renderFinal(data) {
+    const isFinal = !data.requires_approval && data.guardrail_allowed !== false && Boolean(data.answer);
+
+    showElement(byId("finalSection"), isFinal);
+
+    if (!isFinal) {
+        return;
+    }
+
+    latestAnswerMarkdown = data.answer;
+    byId("threadInfo").textContent = `Thread ID: ${data.thread_id || "-"}`;
+    renderMarkdown(byId("resultBox"), data.answer);
+}
+
+function renderGuardrailOnly(data) {
+    if (data.guardrail_allowed !== false) {
+        return false;
+    }
+
+    showElement(byId("workflowSection"), true);
+    showElement(byId("specialistSection"), false);
+    showElement(byId("reviewSection"), false);
+    showElement(byId("finalSection"), false);
+    showError(data.guardrail_reason || "TripBandhu can only help with travel-planning requests.");
+    return true;
+}
+
+function renderResponse(data) {
+    latestResponse = data;
+    currentThreadId = data.thread_id || currentThreadId;
+
+    if (currentThreadId) {
+        localStorage.setItem(THREAD_STORAGE_KEY, currentThreadId);
+    }
+
+    hideError();
+    showElement(byId("workflowSection"), true);
+
+    renderAgents(data);
+    renderSupervisor(data);
+
+    if (renderGuardrailOnly(data)) {
+        return;
+    }
+
+    showElement(byId("specialistSection"), true);
+    renderTabs(data);
+    renderReview(data);
+    renderFinal(data);
+}
+
+async function postJson(url, body) {
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
     });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+        const code = data.error_code ? `${data.error_code}: ` : "";
+        throw new Error(`${code}${data.error || "Request failed."}`);
+    }
+
+    return data;
 }
 
 async function sendMessage() {
     hideError();
 
-    const input = document.getElementById("userInput");
-    const message = input.value.trim();
+    const message = byId("userInput").value.trim();
 
     if (!message) {
         showError("Please enter your travel request first.");
@@ -72,28 +298,45 @@ async function sendMessage() {
     setLoading(true);
 
     try {
-        const response = await fetch("/api/travel", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                message: message,
-                thread_id: currentThreadId
-            })
+        const data = await postJson("/api/travel", {
+            message,
+            thread_id: currentThreadId,
         });
 
-        const data = await response.json();
+        renderResponse(data);
+    } catch (error) {
+        showError(error.message);
+    } finally {
+        setLoading(false);
+    }
+}
 
-        if (!response.ok || !data.success) {
-            throw new Error(data.error || "Something went wrong.");
-        }
+async function resumeTrip(approved) {
+    hideError();
 
-        currentThreadId = data.thread_id;
-        localStorage.setItem("travel_thread_id", currentThreadId);
+    if (!currentThreadId) {
+        showError("No active trip thread is available to resume.");
+        return;
+    }
 
-        showResult(data.answer, data.thread_id);
+    const feedback = byId("revisionFeedback").value.trim();
 
+    if (!approved && !feedback) {
+        showError("Add revision feedback before requesting changes.");
+        return;
+    }
+
+    setLoading(true);
+
+    try {
+        const data = await postJson("/api/travel/resume", {
+            thread_id: currentThreadId,
+            approved,
+            feedback,
+        });
+
+        renderResponse(data);
+        byId("revisionFeedback").value = "";
     } catch (error) {
         showError(error.message);
     } finally {
@@ -102,8 +345,7 @@ async function sendMessage() {
 }
 
 function copyResult() {
-    const resultBox = document.getElementById("resultBox");
-    const text = resultBox.innerText;
+    const text = byId("resultBox").innerText;
 
     if (!text) {
         return;
@@ -111,11 +353,9 @@ function copyResult() {
 
     navigator.clipboard.writeText(text)
         .then(() => {
-            const copyBtn = document.querySelector(".copy-btn");
+            const copyBtn = byId("copyBtn");
             const oldText = copyBtn.textContent;
-
-            copyBtn.textContent = "Copied!";
-
+            copyBtn.textContent = "Copied";
             setTimeout(() => {
                 copyBtn.textContent = oldText;
             }, 1400);
@@ -126,58 +366,62 @@ function copyResult() {
 }
 
 function downloadPDF() {
-    const pdfContent = document.getElementById("pdfContent");
+    const pdfContent = byId("pdfContent");
 
     if (!latestAnswerMarkdown || !pdfContent) {
-        showError("No travel plan available to download.");
+        showError("No final travel plan is available to download.");
         return;
     }
 
-    const downloadBtn = document.querySelector(".download-btn");
+    const downloadBtn = byId("downloadBtn");
     const oldText = downloadBtn.textContent;
 
-    downloadBtn.textContent = "Preparing PDF...";
+    downloadBtn.textContent = "Preparing PDF";
     downloadBtn.disabled = true;
 
-    const options = {
-        margin: 0.5,
-        filename: "ai-travel-plan.pdf",
-        image: {
-            type: "jpeg",
-            quality: 0.98
-        },
-        html2canvas: {
-            scale: 2,
-            useCORS: true,
-            backgroundColor: "#ffffff"
-        },
-        jsPDF: {
-            unit: "in",
-            format: "a4",
-            orientation: "portrait"
-        },
-        pagebreak: {
-            mode: ["avoid-all", "css", "legacy"]
-        }
-    };
-
     html2pdf()
-        .set(options)
+        .set({
+            margin: 0.5,
+            filename: "tripbandhu-travel-plan.pdf",
+            image: { type: "jpeg", quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+            jsPDF: { unit: "in", format: "a4", orientation: "portrait" },
+            pagebreak: { mode: ["avoid-all", "css", "legacy"] },
+        })
         .from(pdfContent)
         .save()
-        .then(() => {
-            downloadBtn.textContent = oldText;
-            downloadBtn.disabled = false;
-        })
         .catch(() => {
+            showError("Could not download PDF.");
+        })
+        .finally(() => {
             downloadBtn.textContent = oldText;
             downloadBtn.disabled = false;
-            showError("Could not download PDF.");
         });
 }
 
-document.addEventListener("keydown", function(event) {
+document.addEventListener("click", (event) => {
+    const promptButton = event.target.closest("[data-prompt]");
+    const tabButton = event.target.closest("[data-tab]");
+
+    if (promptButton) {
+        setPrompt(promptButton.dataset.prompt);
+    }
+
+    if (tabButton && latestResponse) {
+        activeTabKey = tabButton.dataset.tab;
+        renderTabs(latestResponse);
+    }
+});
+
+document.addEventListener("keydown", (event) => {
     if (event.ctrlKey && event.key === "Enter") {
         sendMessage();
     }
 });
+
+byId("sendBtn").addEventListener("click", sendMessage);
+byId("newTripBtn").addEventListener("click", resetTrip);
+byId("approveBtn").addEventListener("click", () => resumeTrip(true));
+byId("revisionBtn").addEventListener("click", () => resumeTrip(false));
+byId("copyBtn").addEventListener("click", copyResult);
+byId("downloadBtn").addEventListener("click", downloadPDF);

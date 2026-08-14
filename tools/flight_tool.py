@@ -4,9 +4,9 @@ import certifi
 import airportsdata
 import pycountry
 import requests
-from dotenv import load_dotenv
+from project_config import load_project_env
 
-load_dotenv()
+load_project_env()
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()

@@ -3,12 +3,12 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from project_config import PROJECT_ROOT, load_project_env
 
 
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+BASE_DIR = PROJECT_ROOT
+load_project_env()
 
 mcp = FastMCP("Weather MCP Server")
 
