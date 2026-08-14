@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  GROQ_API_KEY: "dummy_ci_groq_key"
+  TAVILY_API_KEY: "dummy_ci_tavily_key"
+  AVIATIONSTACK_API_KEY: "dummy_ci_aviationstack_key"
+  OPENWEATHER_API_KEY: "dummy_ci_openweather_key"
+
 jobs:
   fast-checks:
     name: Fast Verification & Unit Evaluations
