@@ -838,9 +838,10 @@ async def final_agent(state: TravelState):
         f"Budget Analysis:\n{state.get('budget_results', '')}\n\n"
         f"Draft Itinerary:\n{state.get('itinerary', '')}\n\n"
         "CRITICAL GROUNDEDNESS & TRUTHFULNESS RULES:\n"
+        "- When presenting flight options, describe them as 'Flight Route Reference' (Provider data · Reference — verify current schedule before booking). Never describe route reference data as confirmed flights or live bookings.\n"
+        "- When presenting the approved itinerary, label the section 'Approved Day-by-Day Itinerary' or 'Day-by-Day Itinerary' — NEVER 'Confirmed Schedule' or 'Confirmed Itinerary' since reservations are not made.\n"
         "- If flight data is unavailable or degraded, state: 'Live flight information was unavailable for this run. Verify schedules and fares with an airline or booking provider before booking.'\n"
-        "- If flight data was unavailable, state clearly that live flights must be verified before booking. Never invent fares.\n"
-        "- All estimated price ranges must be clearly designated as estimates.\n"
+        "- All estimated price ranges must be explicitly marked '[MODEL ESTIMATE - Not Live Fare]'.\n"
         "- Format the final answer beautifully with markdown sections suited to the query.\n"
         "Be clear, realistic, and practical."
     )
@@ -849,7 +850,7 @@ async def final_agent(state: TravelState):
         async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS["llm"]):
             response = await llm.ainvoke(
                 [
-                    SystemMessage(content="You are a professional AI travel booking assistant."),
+                    SystemMessage(content="You are a professional AI travel research assistant."),
                     HumanMessage(content=final_prompt),
                 ]
             )

@@ -20,7 +20,7 @@ TripBandhu delivers a cohesive, retro-editorial human-in-the-loop travel plannin
 | ![Agent Panel and Supervisor Decision](docs/assets/portfolio/agent-supervisor.png) | ![Human Review Gate with Draft Itinerary](docs/assets/portfolio/human-review.png) |
 | *Supervisor validates constraints and activates relevant specialists.* | *Graph pauses via LangGraph `interrupt()` for traveler approval.* |
 
-| **3. Grounded Specialist Intelligence** | **4. Confirmed Final Travel Plan** |
+| **3. Grounded Specialist Intelligence** | **4. Final Travel Plan** |
 | :---: | :---: |
 | ![Specialist Intelligence Tabs](docs/assets/portfolio/evidence-specialists.png) | ![Final Travel Plan Response](docs/assets/portfolio/final-plan.png) |
 | *Live AviationStack, Tavily, and OpenWeather typed evidence tabs.* | *Traveler-approved synthesis with exportable markdown & PDF options.* |
@@ -151,7 +151,7 @@ TripBandhu prioritizes traveler agency through a structured review protocol:
 1. **Autonomous Drafting**: Specialist agents assemble flight schedules, accommodations, weather outlooks, and budget bounds. The Itinerary Specialist compiles draft schedule `v0`.
 2. **State Suspension**: The LangGraph engine hits the `human_review` node and triggers `interrupt()`, safely returning the intermediate state to the client.
 3. **Traveler Decision**:
-   - **Approve**: Traveler accepts the itinerary. Client posts `approved=True`. Graph transitions to `final_synthesis` and produces the confirmed travel plan.
+   - **Approve**: Traveler accepts the itinerary. Client posts `approved=True`. Graph transitions to `final_synthesis` and produces the traveler-approved travel plan.
    - **Request Revision**: Traveler provides textual feedback (e.g., *"Shift Hakone trip to Day 3 and find boutique hotels in Ginza"*). Client posts `approved=False` with feedback. Graph routes back to the supervisor to re-engage necessary specialists for draft `v1`.
 4. **Defensive Cap**: A strict `MAX_REVIEW_ITERATIONS` limit (default 10) prevents infinite looping. If the cap is reached without approval, the graph safely terminates with a `REVIEW_LIMIT_REACHED` notice, preserving all checkpoint history without ever auto-finalizing an unapproved plan.
 
