@@ -387,6 +387,7 @@ textarea {
 .copy-btn,
 .tabs button,
 .quick-prompts button,
+.quick-load,
 #revisionBtn {
     border: 3px solid var(--green-dark);
     border-radius: 0;
@@ -405,6 +406,7 @@ textarea {
 .copy-btn:hover,
 .tabs button:hover,
 .quick-prompts button:hover,
+.quick-load:hover,
 #revisionBtn:hover {
     transform: translate(3px, 3px);
     box-shadow: 2px 2px 0 var(--brown);

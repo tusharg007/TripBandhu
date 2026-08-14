@@ -36,6 +36,27 @@ class ReleaseSafetyTest(unittest.TestCase):
         self.assertIn("/api/travel/resume", script)
         self.assertIn("DOMPurify.sanitize", script)
 
+    def test_quick_load_presets_contract(self):
+        template = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "static" / "script.js").read_text(encoding="utf-8")
+
+        # HTML elements and attributes
+        self.assertIn('class="quick-load"', template)
+        self.assertIn('data-prompt="Plan a 7-day cultural and food-focused trip', template)
+        self.assertIn('data-prompt="Plan a 5-day luxury and shopping trip', template)
+        self.assertIn('data-prompt="Plan a 7-day tropical beach and culture trip', template)
+        self.assertIn('data-prompt="Create a relaxed 4-day coastal getaway', template)
+        self.assertIn('type="button" class="quick-load"', template)
+
+        # JavaScript binding & safety
+        self.assertIn("bindQuickLoadPresets", script)
+        self.assertIn("setPrompt", script)
+        self.assertIn('byId("userInput").value = text', script)
+        self.assertIn('byId("userInput").focus()', script)
+
+        # Ensure setPrompt only populates input and does NOT auto-submit or call API
+        self.assertNotIn("setPrompt() { sendMessage", script)
+
 
 if __name__ == "__main__":
     unittest.main()
