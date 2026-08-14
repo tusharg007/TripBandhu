@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: tripbandhu-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tripbandhu
+      POSTGRES_PASSWORD: tripbandhu_password
+      POSTGRES_DB: tripbandhu
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tripbandhu -d tripbandhu"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: tripbandhu-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://tripbandhu:tripbandhu_password@postgres:5432/tripbandhu?sslmode=disable
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - AVIATIONSTACK_API_KEY=${AVIATIONSTACK_API_KEY:-}
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY:-}
+      - DEFAULT_ORIGIN_IATA=${DEFAULT_ORIGIN_IATA:-DEL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
