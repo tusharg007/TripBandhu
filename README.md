@@ -44,7 +44,7 @@ Most AI travel assistants suffer from three fundamental flaws:
 - **Truthful Evidence & Groundedness**: Every specialist output is tagged with explicit semantic classifications (`PROVIDER_DATA`, `WEB_SOURCE`, `MODEL_ESTIMATE`, `DERIVED`, `UNAVAILABLE`) and freshness indicators (`LIVE`, `FORECAST`, `REFERENCE`, `UNKNOWN`). Unsupported claims and fabricated fares are strictly blocked.
 - **True Async Human-in-the-Loop**: Execution suspends safely using LangGraph `interrupt()` and resumes with `Command(resume=...)`. Reaching the review cap safely terminates the loop without auto-finalizing unapproved plans.
 - **Resilient MCP Capability Layer**: All external tool interactions pass through validated capability contracts with schema-drift detection and graceful provider degradation.
-- **Process-Safe Checkpoint Persistence**: Backed by application-scoped `AsyncPostgresSaver` connection pools, enabling graph runs to survive full process restarts and container redeployments.
+- **Checkpoint Persistence**: Backed by application-scoped `AsyncPostgresSaver` connection pools, enabling graph runs to survive complete service/checkpointer recreation through PostgreSQL.
 
 ---
 
@@ -115,7 +115,7 @@ flowchart TB
 TripBandhu enforces correctness across three complementary testing and evaluation layers:
 
 ### Layer A: Versioned Benchmark Evaluation Dataset (v3.1.0)
-The benchmark suite runs 50 versioned test cases across 14 rigorous behavioral categories:
+The benchmark suite evaluates 50 versioned test cases across 14 deterministic behavioral categories (**49/49 deterministic FAST scenarios passed**; **50/50 scenarios passed in POSTGRES mode**):
 
 | Category | Fast Mode Score | Postgres Mode Score | Focus Area |
 | :--- | :---: | :---: | :--- |
@@ -129,18 +129,18 @@ The benchmark suite runs 50 versioned test cases across 14 rigorous behavioral c
 | **8. Provider Failure Resilience** | 4 / 4 | 4 / 4 | Graceful specialist degradation upon upstream error |
 | **9. Schema Drift Handling** | 2 / 2 | 2 / 2 | Resilient normalization under tool payload drift |
 | **10. Cancellation Semantics** | 1 / 1 | 1 / 1 | Safe cycle termination without auto-finalization |
-| **11. LLM Token & Cost Accounting** | 2 / 2 | 2 / 2 | Accurate usage and latency tracking |
+| **11. LLM Call Accounting** | 2 / 2 | 2 / 2 | Accurate model invocation count tracking |
 | **12. Thread Isolation** | 1 / 1 | 1 / 1 | Strict state boundaries between concurrent sessions |
-| **13. Postgres Checkpoint Persistence** | Skipped | 1 / 1 | Cross-process restart state recovery |
+| **13. Postgres Checkpoint Persistence** | Skipped | 1 / 1 | Checkpoint recovery across service/checkpointer recreation |
 | **14. Negative Controls** | 3 / 3 | 3 / 3 | Non-travel, adversarial, and edge-case rejection |
-| **TOTAL BENCHMARK SCORE** | **49 / 49 (100%)** | **50 / 50 (100%)** | *(Zero false passes; skipped cases never inflate score)* |
+| **TOTAL BENCHMARK SCORE** | **49 / 49 passed** | **50 / 50 passed** | *(Zero false passes; skipped cases never inflate score)* |
 
 ### Layer B: Pytest Regression & Integration Suite
 - **89 Automated Tests Passed**: Complete coverage spanning input guardrails, supervisor routing, specialist contracts, MCP client lifecycle, schema drift resilience, thread isolation, and PostgreSQL checkpoint persistence.
 - **Fast Test Execution**: 88 unit and contract tests complete in under 5 seconds locally without external network dependencies.
 
 ### Layer C: Live Checkpoint Restart Persistence
-- Verified end-to-end integration test (`tests/test_postgres_checkpoint_restart.py`) proving that an interrupted graph run safely resumes from PostgreSQL even after complete application and event loop destruction.
+- Verified end-to-end integration test (`tests/test_postgres_checkpoint_restart.py`) proving that workflow state survives complete graph/service recreation through PostgreSQL checkpoints.
 
 ---
 
@@ -287,7 +287,7 @@ TripBandhu/
 ├── eval/                          # Quantitative Evaluation & Observability
 │   ├── eval_dataset.py            # 50-case versioned evaluation dataset (v3.1.0)
 │   ├── evaluator.py               # Benchmark execution harness (FAST / POSTGRES modes)
-│   └── trace_observability.py     # Execution tracing, latency, token accounting
+│   └── trace_observability.py     # Execution tracing, latency, LLM call accounting
 ├── docs/                          # Architecture & Portfolio Assets
 │   ├── architecture/
 │   │   └── FINAL_ARCHITECTURE.md  # Detailed system architecture specification

@@ -88,7 +88,7 @@ Multi-day itinerary requests enter a human review gate via LangGraph's native `i
 3. **Defensive Cap**: If 10 rejections occur without approval, the graph terminates safely at `review_limit_reached` with `approved=False`. Reaching the review cap **never** auto-finalizes or produces a fake approved plan.
 
 ### E. PostgreSQL Checkpoint Persistence
-All state, multi-turn review history, and interrupts are persisted across process boundaries using LangGraph's application-scoped `AsyncPostgresSaver`. In-flight reviews survive backend server restarts, deployments, and worker recycles without losing state.
+All state, multi-turn review history, and interrupts are persisted using LangGraph's application-scoped `AsyncPostgresSaver`. In-flight reviews survive complete graph and service recreations without losing state.
 
 ### F. Quantitative Evaluation Harness
 A versioned 50-scenario benchmark suite (`eval/eval_dataset.py` v3.1.0) deterministically validates routing accuracy, guardrail precision, capability permissions, evidence semantics, groundedness, HITL transitions, provider failure classification, and trace observability with 100% pass rates across critical safety invariants.
