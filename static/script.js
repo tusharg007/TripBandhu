@@ -111,10 +111,8 @@ function resetTrip() {
 }
 
 function getAgentState(agentKey, data) {
-    const selected = Array.isArray(data.selected_agents) && data.selected_agents.includes(agentKey);
-
     if (agentKey === "supervisor") {
-        return data.guardrail_allowed === false ? "completed" : "completed";
+        return "completed";
     }
 
     if (agentKey === "human_review") {
@@ -129,13 +127,36 @@ function getAgentState(agentKey, data) {
         return "not selected";
     }
 
+    const selected = Array.isArray(data.selected_agents) && data.selected_agents.includes(agentKey);
+
     if (!selected) {
         return "not selected";
     }
 
-    if (agentKey === "flight_agent" && data.flight_results) return "completed";
-    if (agentKey === "hotel_agent" && data.hotel_results) return "completed";
-    if (agentKey === "weather_agent" && data.weather_results) return "completed";
+    if (data.specialist_statuses && data.specialist_statuses[agentKey]) {
+        const status = String(data.specialist_statuses[agentKey]).toUpperCase();
+        if (status === "DEGRADED") return "degraded";
+        if (status === "FAILED") return "failed";
+        if (status === "COMPLETED") return "completed";
+        if (status === "NOT_SELECTED") return "not selected";
+    }
+
+    // Heuristic fallbacks if specialist_statuses is absent:
+    if (agentKey === "flight_agent") {
+        const text = String(data.flight_results || "");
+        if (text.includes("unavailable") || text.includes("temporarily unavailable")) return "degraded";
+        if (text) return "completed";
+    }
+    if (agentKey === "hotel_agent") {
+        const text = String(data.hotel_results || "");
+        if (text.includes("temporarily unavailable")) return "degraded";
+        if (text) return "completed";
+    }
+    if (agentKey === "weather_agent") {
+        const text = String(data.weather_results || "");
+        if (text.includes("temporarily unavailable")) return "degraded";
+        if (text) return "completed";
+    }
     if (agentKey === "budget_agent" && data.budget_results) return "completed";
     if (agentKey === "itinerary_agent" && data.itinerary) return "completed";
 
@@ -182,7 +203,15 @@ function renderSupervisor(data) {
         </div>
     `).join("");
 
-    byId("supervisorReasoning").textContent = data.supervisor_reasoning || "No supervisor reasoning returned.";
+    let reasoning = data.supervisor_reasoning || "No supervisor reasoning returned.";
+    if (reasoning.toLowerCase().includes("except none")) {
+        const activeSpecialists = (data.selected_agents || [])
+            .map((name) => name.replace("_agent", ""))
+            .join(", ");
+        reasoning = `Coordinating ${activeSpecialists} specialists for this travel plan.`;
+    }
+
+    byId("supervisorReasoning").textContent = reasoning;
 }
 
 function renderTabs(data) {

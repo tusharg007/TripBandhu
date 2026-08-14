@@ -475,6 +475,24 @@ textarea {
     background: var(--green-soft);
 }
 
+.agent-degraded {
+    background: #fff0c2;
+    border-color: #a86c00;
+}
+
+.agent-degraded strong {
+    color: #875400;
+}
+
+.agent-failed {
+    background: #ffd6bd;
+    border-color: var(--red);
+}
+
+.agent-failed strong {
+    color: var(--red);
+}
+
 .agent-waiting-for-review {
     background: var(--yellow-light);
 }
@@ -579,7 +597,17 @@ textarea {
 }
 
 .review-actions {
-    margin-top: 16px;
+    position: sticky;
+    bottom: 16px;
+    z-index: 15;
+    background: var(--paper-light);
+    padding: 14px 16px;
+    border: 3px solid var(--green-dark);
+    box-shadow: 4px 4px 0 var(--brown);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 20px;
 }
 
 .pdf-content {

@@ -59,6 +59,7 @@ PUBLIC_CONTRACT_DEFAULTS = {
     "budget_results": "",
     "itinerary": "",
     "selected_agents": [],
+    "specialist_statuses": {},
     "trip_constraints": {},
     "supervisor_reasoning": "",
     "guardrail_allowed": True,

@@ -64,7 +64,7 @@ llm = ChatGroq(
 )
 
 # =========================
-# State - original fields kept, new control fields added
+# State - original fields kept, truthfulness & status fields added
 # =========================
 class TravelState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], operator.add]
@@ -76,14 +76,18 @@ class TravelState(TypedDict, total=False):
     selected_agents: list[str]
     trip_constraints: dict[str, Any]
     supervisor_reasoning: str
+    specialist_statuses: dict[str, str]
 
-    # Original specialist results
+    # Specialist results and availability flags
     flight_results: str
+    flight_data_available: bool
     hotel_results: str
+    hotel_data_available: bool
     weather_results: str
+    weather_data_available: bool
     itinerary: str
 
-    # New budget + HITL state
+    # Budget + HITL state
     budget_results: str
     approval_request: str
     approved: bool
@@ -94,7 +98,7 @@ class TravelState(TypedDict, total=False):
 
 
 # =========================
-# Shared helpers
+# Shared helpers & safe provider messages
 # =========================
 KNOWN_AGENTS = {
     "flight_agent",
@@ -111,6 +115,21 @@ AGENT_ORDER = [
     "budget_agent",
     "itinerary_agent",
 ]
+
+FLIGHT_UNAVAILABLE_MESSAGE = (
+    "Live flight data is temporarily unavailable. The rest of your trip can "
+    "still be prepared, but flight details should be verified before booking."
+)
+
+HOTEL_UNAVAILABLE_MESSAGE = (
+    "Live hotel search is temporarily unavailable. General accommodation and "
+    "neighborhood guidance will be provided based on the destination."
+)
+
+WEATHER_UNAVAILABLE_MESSAGE = (
+    "Live weather forecast is temporarily unavailable for this destination. "
+    "General seasonal guidance will be provided."
+)
 
 
 def _llm_text(system_prompt: str, user_prompt: str) -> str:
@@ -190,7 +209,7 @@ User request:
 
     if not allowed:
         reason = guardrail_reason or (
-            "TripMate AI can only help with travel-planning requests. "
+            "TripBandhu can only help with travel-planning requests. "
             "Please ask about a destination, flight, hotel, weather, budget, "
             "or itinerary."
         )
@@ -198,6 +217,7 @@ User request:
             "guardrail_allowed": False,
             "guardrail_reason": reason,
             "selected_agents": [],
+            "specialist_statuses": {agent: "NOT_SELECTED" for agent in KNOWN_AGENTS},
             "trip_constraints": _empty_constraints(),
             "supervisor_reasoning": reason,
             "final_response": reason,
@@ -227,8 +247,10 @@ Return strict JSON only using this schema:
     "travel_style": "",
     "special_preferences": []
   }},
-  "reasoning": ""
+  "reasoning": "Concise 1-2 sentence explanation of which specialists were selected and why."
 }}
+
+Do not use awkward phrasing like "all specialist agents except none are required". State simply and clearly which aspects of the trip require specialist planning.
 
 User request:
 {query}
@@ -259,18 +281,23 @@ User request:
         llm_calls += 1
     except Exception as exc:
         print(f"Supervisor fallback used: {exc}")
-        # Original workflow behavior is preserved as the fallback.
         selected_agents = AGENT_ORDER.copy()
         constraints = _empty_constraints()
         reasoning = (
-            "Supervisor parsing failed, so the original full travel workflow "
-            "was selected as a safe fallback."
+            "Selected travel specialists to coordinate flights, hotels, "
+            "weather, budget, and itinerary planning."
         )
+
+    statuses = {
+        agent: ("SELECTED" if agent in selected_agents else "NOT_SELECTED")
+        for agent in KNOWN_AGENTS
+    }
 
     return {
         "guardrail_allowed": True,
         "guardrail_reason": guardrail_reason,
         "selected_agents": selected_agents,
+        "specialist_statuses": statuses,
         "trip_constraints": constraints,
         "supervisor_reasoning": reasoning,
         "messages": [AIMessage(content="Supervisor created the agent plan.")],
@@ -292,7 +319,7 @@ def guardrail_blocked_agent(state: TravelState):
 
 
 # =========================
-# Flight Agent - original behavior kept
+# Flight Agent - truthful with degradation tracking
 # =========================
 FLIGHT_AGENT_PROMPT = """
 You are a travel flight expert.
@@ -311,7 +338,7 @@ Generate:
 2. Likely arrival airport
 3. Airlines serving this route
 4. Typical flight duration
-5. Estimated airfare range
+5. Estimated airfare range (clearly labeled as estimate)
 6. Peak season pricing warning
 7. Booking advice
 
@@ -322,6 +349,7 @@ Return concise travel guidance.
 def flight_agent(state: TravelState):
     print("\nINSIDE FLIGHT AGENT\n")
     query = state["user_query"]
+    statuses = dict(state.get("specialist_statuses", {}))
 
     try:
         airports = asyncio.run(aviation_mcp_call("list_airports"))
@@ -343,29 +371,39 @@ def flight_agent(state: TravelState):
             ]
         )
         flight_data = response.content
+        flight_available = True
+        statuses["flight_agent"] = "COMPLETED"
     except Exception as exc:
-        flight_data = f"Flight information unavailable: {exc}"
+        print(f"FLIGHT AGENT ERROR: {type(exc).__name__}: {exc}", flush=True)
+        flight_data = FLIGHT_UNAVAILABLE_MESSAGE
+        flight_available = False
+        statuses["flight_agent"] = "DEGRADED"
 
     return {
         "flight_results": flight_data,
+        "flight_data_available": flight_available,
+        "specialist_statuses": statuses,
         "messages": [AIMessage(content="Flight recommendations generated")],
-        "llm_calls": state.get("llm_calls", 0) + 1,
+        "llm_calls": state.get("llm_calls", 0) + (1 if flight_available else 0),
     }
 
 
 # =========================
-# Hotel Agent - original behavior kept
+# Hotel Agent - truthful with degradation tracking
 # =========================
 def hotel_agent(state: TravelState):
     query = (
         f"Best hotels for "
         f"{state['user_query']}"
     )
+    statuses = dict(state.get("specialist_statuses", {}))
 
     try:
         hotel_results = asyncio.run(
             tavily_mcp_search(query)
         )
+        hotel_available = True
+        statuses["hotel_agent"] = "COMPLETED"
 
     except Exception as exc:
         print(
@@ -373,16 +411,14 @@ def hotel_agent(state: TravelState):
             f"{type(exc).__name__}: {exc}",
             flush=True,
         )
-
-        hotel_results = (
-            "Live hotel search is temporarily unavailable. "
-            "Provide general accommodation and neighborhood "
-            "guidance based on the destination and clearly "
-            "label it as non-live advice."
-        )
+        hotel_results = HOTEL_UNAVAILABLE_MESSAGE
+        hotel_available = False
+        statuses["hotel_agent"] = "DEGRADED"
 
     return {
         "hotel_results": hotel_results,
+        "hotel_data_available": hotel_available,
+        "specialist_statuses": statuses,
         "messages": [
             AIMessage(
                 content="Hotel information processed."
@@ -395,14 +431,16 @@ def hotel_agent(state: TravelState):
 
 
 # =========================
-# Weather Agent - original behavior kept
+# Weather Agent - truthful with degradation tracking
 # =========================
 def weather_agent(state: TravelState):
-    city = extract_destination(
-        state["user_query"]
-    )
+    statuses = dict(state.get("specialist_statuses", {}))
 
     try:
+        city = extract_destination(
+            state["user_query"]
+        )
+
         weather_data = asyncio.run(
             weather_mcp_search(city)
         )
@@ -418,6 +456,8 @@ Current Weather:
 Forecast:
 {forecast_data}
 """
+        weather_available = True
+        statuses["weather_agent"] = "COMPLETED"
 
     except Exception as exc:
         print(
@@ -425,16 +465,18 @@ Forecast:
             f"{type(exc).__name__}: {exc}",
             flush=True,
         )
-
+        dest = state.get("trip_constraints", {}).get("destination") or "your destination"
         weather_results = (
-            f"Live weather information for {city} "
-            "is temporarily unavailable. Give general "
-            "seasonal guidance and advise the traveler "
-            "to verify the forecast before departure."
+            f"Live weather information for {dest} is temporarily unavailable. "
+            "General seasonal guidance will be provided; check current forecasts closer to departure."
         )
+        weather_available = False
+        statuses["weather_agent"] = "DEGRADED"
 
     return {
         "weather_results": weather_results,
+        "weather_data_available": weather_available,
+        "specialist_statuses": statuses,
         "messages": [
             AIMessage(
                 content="Weather information processed."
@@ -444,9 +486,10 @@ Forecast:
 
 
 # =========================
-# Budget Agent - new specialist
+# Budget Agent - grounded analysis
 # =========================
 def budget_agent(state: TravelState):
+    statuses = dict(state.get("specialist_statuses", {}))
     prompt = f"""
 Analyze whether this trip is realistic for the user's budget.
 
@@ -465,35 +508,47 @@ Hotel Results:
 Weather Results:
 {state.get('weather_results', '')}
 
+CRITICAL GROUNDEDNESS RULES:
+- If flight results indicate live flight data is unavailable, DO NOT invent exact flight fares or prices. Explicitly note that airfare must be checked and budgeted separately.
+- Clearly differentiate between estimated category ranges and verified live prices.
+- If exact prices are unavailable, provide realistic category ranges and explicitly state they are estimates.
+
 Return:
 1. Estimated cost categories
 2. Budget risk areas
 3. Money-saving suggestions
 4. Overall feasibility
-
-If exact live prices are unavailable, clearly label estimates as approximate.
 """
 
-    response = llm.invoke(
-        [
-            SystemMessage(content="You are a practical travel budget analyst."),
-            HumanMessage(content=prompt),
-        ]
-    )
+    try:
+        response = llm.invoke(
+            [
+                SystemMessage(content="You are a practical travel budget analyst."),
+                HumanMessage(content=prompt),
+            ]
+        )
+        budget_results = response.content
+        statuses["budget_agent"] = "COMPLETED"
+    except Exception as exc:
+        print(f"BUDGET AGENT ERROR: {exc}", flush=True)
+        budget_results = "Budget estimation could not be generated."
+        statuses["budget_agent"] = "DEGRADED"
 
     return {
-        "budget_results": response.content,
+        "budget_results": budget_results,
+        "specialist_statuses": statuses,
         "messages": [AIMessage(content="Budget assessment generated.")],
         "llm_calls": state.get("llm_calls", 0) + 1,
     }
 
 
 # =========================
-# Itinerary Agent - original behavior extended with selected results
+# Itinerary Agent - grounded draft preparation
 # =========================
 def itinerary_agent(state: TravelState):
+    statuses = dict(state.get("specialist_statuses", {}))
     prompt = f"""
-Create a complete travel itinerary.
+Create a complete travel itinerary for human review.
 
 User Query:
 {state['user_query']}
@@ -513,16 +568,29 @@ Weather Results:
 Budget Results:
 {state.get('budget_results', '')}
 
+CRITICAL GROUNDEDNESS RULES:
+- If flight results indicate live flight information is unavailable, DO NOT invent or fabricate flight prices (e.g. specific currency ranges), flight numbers, or specific airline schedules. Instead, state clearly: 'Live flight data is unavailable; check schedules and fares directly with airlines or booking portals.'
+- If hotel information is general or unavailable, do not claim specific live room rates.
+- If weather is unavailable, provide seasonal tips and remind the traveler to check live forecasts.
+- Never fabricate specific numbers, fares, or live booking details when specialist data is marked unavailable.
+
 Make the itinerary practical, budget-aware, and easy to follow.
 Create a clear draft that is ready for human review.
 """
 
-    response = llm.invoke(
-        [
-            SystemMessage(content="You are an expert travel planner."),
-            HumanMessage(content=prompt),
-        ]
-    )
+    try:
+        response = llm.invoke(
+            [
+                SystemMessage(content="You are an expert travel planner."),
+                HumanMessage(content=prompt),
+            ]
+        )
+        itinerary_content = response.content
+        statuses["itinerary_agent"] = "COMPLETED"
+    except Exception as exc:
+        print(f"ITINERARY AGENT ERROR: {exc}", flush=True)
+        itinerary_content = "Draft itinerary could not be generated."
+        statuses["itinerary_agent"] = "DEGRADED"
 
     approval_request = (
         "Please review the generated draft itinerary. Approve it to create the "
@@ -530,8 +598,9 @@ Create a clear draft that is ready for human review.
     )
 
     return {
-        "itinerary": response.content,
+        "itinerary": itinerary_content,
         "approval_request": approval_request,
+        "specialist_statuses": statuses,
         "messages": [AIMessage(content="Draft itinerary created for human review.")],
         "llm_calls": state.get("llm_calls", 0) + 1,
     }
@@ -549,6 +618,7 @@ def human_approval_agent(state: TravelState):
             "approval_request": state.get("approval_request", ""),
             "selected_agents": state.get("selected_agents", []),
             "supervisor_reasoning": state.get("supervisor_reasoning", ""),
+            "specialist_statuses": state.get("specialist_statuses", {}),
             "expected_response": {
                 "approved": True,
                 "feedback": "Optional revision feedback",
@@ -567,7 +637,7 @@ def human_approval_agent(state: TravelState):
 
 
 # =========================
-# Final Response Agent - original format kept, HITL feedback added
+# Final Response Agent - grounded final output
 # =========================
 def final_agent(state: TravelState):
     if state.get("approved", False):
@@ -607,6 +677,12 @@ Budget Analysis:
 Draft Itinerary:
 {state.get('itinerary', '')}
 
+CRITICAL GROUNDEDNESS & TRUTHFULNESS RULES:
+- If flight data indicates live flight data was unavailable, DO NOT fabricate flight prices, fares (e.g. ₹X to ₹Y), flight numbers, or specific airlines from imagination. In the Flight Information section, state clearly: 'Live flight information was unavailable for this run. Verify schedules and fares with an airline or booking provider before booking.'
+- If hotel data was unavailable or non-live, provide neighborhood guidance and state that prices must be confirmed.
+- If weather was unavailable, provide seasonal advice and advise checking forecasts before departure.
+- Do not fabricate live booking codes or specific unverified fares.
+
 Format the final answer beautifully using these sections:
 1. Trip Summary
 2. Flight Information
@@ -618,8 +694,6 @@ Format the final answer beautifully using these sections:
 
 Important:
 - Be clear and practical.
-- Mention that live flight APIs may not provide ticket prices when pricing is unavailable.
-- Include weather-based travel advice.
 - Keep the response useful for real travel planning.
 - Incorporate the human feedback when revision was requested.
 """
@@ -777,6 +851,7 @@ def _serialize_result(
             else result.get("itinerary", "")
         ),
         "selected_agents": result.get("selected_agents", []),
+        "specialist_statuses": result.get("specialist_statuses", {}),
         "trip_constraints": result.get("trip_constraints", {}),
         "supervisor_reasoning": result.get("supervisor_reasoning", ""),
         "guardrail_allowed": result.get("guardrail_allowed", True),
@@ -801,11 +876,15 @@ def run_travel_agent(user_input: str, thread_id: str | None = None):
             "guardrail_allowed": True,
             "guardrail_reason": "",
             "selected_agents": [],
+            "specialist_statuses": {},
             "trip_constraints": _empty_constraints(),
             "supervisor_reasoning": "",
             "flight_results": "",
+            "flight_data_available": True,
             "hotel_results": "",
+            "hotel_data_available": True,
             "weather_results": "",
+            "weather_data_available": True,
             "budget_results": "",
             "itinerary": "",
             "approval_request": "",
