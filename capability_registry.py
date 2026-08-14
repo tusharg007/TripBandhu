@@ -1,5 +1,5 @@
 """
-capability_registry.py — TF2 MCP Capability Registry, Normalization & Provenance Layer.
+capability_registry.py — MCP Capability Registry, Normalization & Provenance Layer.
 
 Defines approved capability definitions, specialist permission maps, deterministic
 output normalizers, and grounding context packagers.
@@ -16,6 +16,7 @@ from schemas import (
     CapabilityEvidence,
     CapabilityHealth,
     EvidenceKind,
+    EvidenceFreshness,
     SourceReference,
     ErrorCode,
 )
@@ -31,7 +32,8 @@ CAPABILITY_REGISTRY: dict[str, CapabilityDefinition] = {
         server="aviationstack",
         tool_name="list_routes",
         access_mode="read_only",
-        evidence_kind=EvidenceKind.LIVE_PROVIDER,
+        evidence_kind=EvidenceKind.PROVIDER_DATA,
+        freshness=EvidenceFreshness.REFERENCE,
         description="Search commercial flight routes between departure and arrival IATA airport codes.",
         required_params=[],
     ),
@@ -40,7 +42,8 @@ CAPABILITY_REGISTRY: dict[str, CapabilityDefinition] = {
         server="aviationstack",
         tool_name="list_airports",
         access_mode="read_only",
-        evidence_kind=EvidenceKind.LIVE_PROVIDER,
+        evidence_kind=EvidenceKind.PROVIDER_DATA,
+        freshness=EvidenceFreshness.REFERENCE,
         description="Lookup airport metadata and IATA codes.",
         required_params=[],
     ),
@@ -49,7 +52,8 @@ CAPABILITY_REGISTRY: dict[str, CapabilityDefinition] = {
         server="aviationstack",
         tool_name="list_airlines",
         access_mode="read_only",
-        evidence_kind=EvidenceKind.LIVE_PROVIDER,
+        evidence_kind=EvidenceKind.PROVIDER_DATA,
+        freshness=EvidenceFreshness.REFERENCE,
         description="Lookup airline names and IATA codes.",
         required_params=[],
     ),
@@ -59,6 +63,7 @@ CAPABILITY_REGISTRY: dict[str, CapabilityDefinition] = {
         tool_name="tavily_search",
         access_mode="read_only",
         evidence_kind=EvidenceKind.WEB_SOURCE,
+        freshness=EvidenceFreshness.REFERENCE,
         description="Web search for hotels, accommodations, neighborhoods, and reviews.",
         required_params=["query"],
     ),
@@ -67,7 +72,8 @@ CAPABILITY_REGISTRY: dict[str, CapabilityDefinition] = {
         server="weather",
         tool_name="get_current_weather",
         access_mode="read_only",
-        evidence_kind=EvidenceKind.LIVE_PROVIDER,
+        evidence_kind=EvidenceKind.PROVIDER_DATA,
+        freshness=EvidenceFreshness.LIVE,
         description="Real-time current meteorological observations for a destination city.",
         required_params=["city"],
     ),
@@ -76,7 +82,8 @@ CAPABILITY_REGISTRY: dict[str, CapabilityDefinition] = {
         server="weather",
         tool_name="get_forecast",
         access_mode="read_only",
-        evidence_kind=EvidenceKind.LIVE_PROVIDER,
+        evidence_kind=EvidenceKind.PROVIDER_DATA,
+        freshness=EvidenceFreshness.FORECAST,
         description="Multi-day meteorological forecast entries for a destination city.",
         required_params=["city"],
     ),
@@ -164,6 +171,7 @@ def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int
                 url=url if url else None,
                 observed_at=now_iso,
                 evidence_kind=EvidenceKind.WEB_SOURCE,
+                freshness=EvidenceFreshness.REFERENCE,
             )
         )
         items.append({"title": title, "url": url, "snippet": content[:350]})
@@ -177,6 +185,7 @@ def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int
         provider="tavily",
         tool_name="tavily_search",
         evidence_kind=EvidenceKind.WEB_SOURCE,
+        freshness=EvidenceFreshness.REFERENCE,
         status=CapabilityHealth.AVAILABLE,
         retrieved_at=now_iso,
         latency_ms=latency_ms,
@@ -197,10 +206,11 @@ def normalize_weather_results(
     sources = [
         SourceReference(
             provider="OpenWeather API",
-            title=f"Live Weather Observation for {city}",
+            title=f"Live Weather & Forecast Observation for {city}",
             url="https://openweathermap.org",
             observed_at=now_iso,
-            evidence_kind=EvidenceKind.LIVE_PROVIDER,
+            evidence_kind=EvidenceKind.PROVIDER_DATA,
+            freshness=EvidenceFreshness.LIVE,
         )
     ]
 
@@ -210,16 +220,16 @@ def normalize_weather_results(
         "forecast": forecast_data,
     }
 
-    # Format concise summary
     curr_str = current_data if isinstance(current_data, str) else json.dumps(current_data, indent=2)
     fore_str = forecast_data if isinstance(forecast_data, str) else json.dumps(forecast_data, indent=2)
-    summary = f"**Current Weather for {city}:**\n{curr_str}\n\n**Forecast:**\n{fore_str}"
+    summary = f"**Current Weather for {city} (LIVE):**\n{curr_str}\n\n**Forecast (FORECAST):**\n{fore_str}"
 
     return CapabilityEvidence(
         capability="WEATHER_FORECAST",
         provider="weather",
         tool_name="get_current_weather,get_forecast",
-        evidence_kind=EvidenceKind.LIVE_PROVIDER,
+        evidence_kind=EvidenceKind.PROVIDER_DATA,
+        freshness=EvidenceFreshness.FORECAST,
         status=CapabilityHealth.AVAILABLE,
         retrieved_at=now_iso,
         latency_ms=latency_ms,
@@ -237,15 +247,16 @@ def normalize_flight_results(
     origin: str = "",
     latency_ms: Optional[int] = None,
 ) -> CapabilityEvidence:
-    """Normalize AviationStack route and airport data into typed evidence."""
+    """Normalize AviationStack route and airport data into typed reference evidence."""
     now_iso = datetime.now(timezone.utc).isoformat()
     sources = [
         SourceReference(
-            provider="AviationStack Schedule & Route API",
+            provider="AviationStack Schedule & Route Database",
             title=f"Flight Routes & Airports for {origin or 'Origin'} -> {destination}",
             url="https://aviationstack.com",
             observed_at=now_iso,
-            evidence_kind=EvidenceKind.LIVE_PROVIDER,
+            evidence_kind=EvidenceKind.PROVIDER_DATA,
+            freshness=EvidenceFreshness.REFERENCE,
         )
     ]
 
@@ -262,16 +273,17 @@ def normalize_flight_results(
     airlines_str = str(airlines_data)[:600] if airlines_data else ""
 
     summary = (
-        f"**Route Information ({origin or 'Origin'} -> {destination}):**\n{routes_str}\n\n"
-        f"**Serving Airports:**\n{airports_str}\n\n"
-        f"**Operating Airlines:**\n{airlines_str}"
+        f"**Route Information ({origin or 'Origin'} -> {destination}) [REFERENCE]:**\n{routes_str}\n\n"
+        f"**Serving Airports [REFERENCE]:**\n{airports_str}\n\n"
+        f"**Operating Airlines [REFERENCE]:**\n{airlines_str}"
     )
 
     return CapabilityEvidence(
         capability="FLIGHT_ROUTE_SEARCH",
         provider="aviationstack",
         tool_name="list_routes,list_airports,list_airlines",
-        evidence_kind=EvidenceKind.LIVE_PROVIDER,
+        evidence_kind=EvidenceKind.PROVIDER_DATA,
+        freshness=EvidenceFreshness.REFERENCE,
         status=CapabilityHealth.AVAILABLE,
         retrieved_at=now_iso,
         latency_ms=latency_ms,
@@ -282,14 +294,14 @@ def normalize_flight_results(
 
 
 # ===========================================================================
-# 4. Grounding Context Packager (Evidence Kind Tagging)
+# 4. Grounding Context Packager (Evidence Kind & Freshness Tagging)
 # ===========================================================================
 
 def format_grounded_evidence_context(evidence_store: dict[str, dict]) -> str:
     """Pack normalized evidence into a deterministic, clearly labeled prompt context.
 
-    Explicitly tags each section with [LIVE_PROVIDER], [WEB_SOURCE], [MODEL_ESTIMATE],
-    or [UNAVAILABLE] to prevent model fabrication and maintain truthful grounding.
+    Explicitly tags each section with [PROVIDER_DATA - REFERENCE], [PROVIDER_DATA - LIVE],
+    [WEB_SOURCE], [MODEL_ESTIMATE], or [UNAVAILABLE] to maintain truthful grounding.
     """
     if not evidence_store:
         return "No external provider evidence was retrieved for this run."
@@ -298,7 +310,8 @@ def format_grounded_evidence_context(evidence_store: dict[str, dict]) -> str:
 
     for cap_name, ev_dict in evidence_store.items():
         ev = CapabilityEvidence(**ev_dict) if isinstance(ev_dict, dict) else ev_dict
-        kind_tag = f"[{ev.evidence_kind.value}]"
+        freshness_tag = f" - {ev.freshness.value}" if ev.freshness != EvidenceFreshness.UNKNOWN else ""
+        kind_tag = f"[{ev.evidence_kind.value}{freshness_tag}]"
         status_tag = f"Status: {ev.status.value}"
         provider_info = f"Provider: {ev.provider} ({ev.tool_name})"
 
@@ -308,7 +321,7 @@ def format_grounded_evidence_context(evidence_store: dict[str, dict]) -> str:
                 source_links.append(f"[{src.title}]({src.url})")
             else:
                 source_links.append(src.title)
-        sources_str = f"Sources: {', '.join(source_links)}" if source_links else "Sources: Direct API"
+        sources_str = f"Sources: {', '.join(source_links)}" if source_links else "Sources: Direct Provider API"
 
         section = (
             f"### {kind_tag} {cap_name} ({provider_info})\n"

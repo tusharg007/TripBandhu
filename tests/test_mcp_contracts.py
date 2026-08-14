@@ -1,6 +1,6 @@
 """
-test_mcp_contracts.py — TF2 Deterministic MCP capability contract, evidence,
-provenance, and grounding tests.
+test_mcp_contracts.py — TF2/TF3 Deterministic MCP capability contract, evidence,
+provenance, freshness, and grounding tests.
 """
 
 import asyncio
@@ -18,6 +18,7 @@ from schemas import (
     CapabilityTraceEntry,
     ErrorCode,
     EvidenceKind,
+    EvidenceFreshness,
     SourceReference,
 )
 from capability_registry import (
@@ -75,12 +76,10 @@ class TestCapabilityRegistry(unittest.TestCase):
 
     def test_unknown_or_unauthorized_tool_rejected(self):
         """Arbitrary or cross-specialist tool execution is strictly rejected."""
-        # Unknown capability name
         with self.assertRaises(ValueError) as ctx:
             validate_specialist_capability("flight_agent", "ARBITRARY_MODEL_TOOL")
         self.assertIn("not in the TripBandhu Capability Registry", str(ctx.exception))
 
-        # Unauthorized specialist mapping (hotel_agent cannot execute aviationstack)
         with self.assertRaises(ValueError) as ctx:
             validate_specialist_capability("hotel_agent", "FLIGHT_ROUTE_SEARCH")
         self.assertIn("not permitted to execute capability", str(ctx.exception))
@@ -94,7 +93,7 @@ class TestTavilyNormalization(unittest.TestCase):
         raw_mock = {
             "results": [
                 {"title": f"Hotel {i}", "url": f"https://example.com/hotel{i}", "content": f"Description {i}"}
-                for i in range(15)  # 15 raw results
+                for i in range(15)
             ]
         }
 
@@ -102,6 +101,7 @@ class TestTavilyNormalization(unittest.TestCase):
 
         self.assertEqual(evidence.capability, "HOTEL_WEB_RESEARCH")
         self.assertEqual(evidence.evidence_kind, EvidenceKind.WEB_SOURCE)
+        self.assertEqual(evidence.freshness, EvidenceFreshness.REFERENCE)
         self.assertEqual(evidence.status, CapabilityHealth.AVAILABLE)
         self.assertEqual(len(evidence.data), 6, "Must be bounded to top 6 results")
         self.assertEqual(len(evidence.sources), 6)
@@ -120,7 +120,8 @@ class TestWeatherNormalization(unittest.TestCase):
         evidence = normalize_weather_results(curr_raw, fore_raw, city="Tokyo", latency_ms=85)
 
         self.assertEqual(evidence.capability, "WEATHER_FORECAST")
-        self.assertEqual(evidence.evidence_kind, EvidenceKind.LIVE_PROVIDER)
+        self.assertEqual(evidence.evidence_kind, EvidenceKind.PROVIDER_DATA)
+        self.assertEqual(evidence.freshness, EvidenceFreshness.FORECAST)
         self.assertEqual(evidence.status, CapabilityHealth.AVAILABLE)
         self.assertEqual(len(evidence.sources), 1)
         self.assertEqual(evidence.sources[0].provider, "OpenWeather API")
@@ -128,10 +129,10 @@ class TestWeatherNormalization(unittest.TestCase):
 
 
 class TestFlightNormalizationAndPricingTruth(unittest.TestCase):
-    """Verify AviationStack normalization and pricing truth."""
+    """Verify AviationStack normalization and reference pricing truth."""
 
     def test_flight_evidence_normalized(self):
-        """Route, airport, and airline data are normalized without claiming live fares."""
+        """Route, airport, and airline data are normalized as reference provider data."""
         routes_raw = [{"airline": "ANA", "flight_number": "NH828", "departure": "DEL", "arrival": "HND"}]
         airports_raw = [{"iata": "HND", "name": "Haneda Airport"}]
         airlines_raw = [{"iata": "NH", "name": "All Nippon Airways"}]
@@ -146,23 +147,25 @@ class TestFlightNormalizationAndPricingTruth(unittest.TestCase):
         )
 
         self.assertEqual(evidence.capability, "FLIGHT_ROUTE_SEARCH")
-        self.assertEqual(evidence.evidence_kind, EvidenceKind.LIVE_PROVIDER)
+        self.assertEqual(evidence.evidence_kind, EvidenceKind.PROVIDER_DATA)
+        self.assertEqual(evidence.freshness, EvidenceFreshness.REFERENCE)
         self.assertEqual(evidence.status, CapabilityHealth.AVAILABLE)
         self.assertIn("Delhi -> Tokyo", evidence.summary)
         self.assertIn("NH828", evidence.summary)
 
 
 class TestGroundingLabelsAndContextPacking(unittest.TestCase):
-    """Verify that evidence context formatting tags provenance kinds distinctly."""
+    """Verify that evidence context formatting tags provenance kinds & freshness distinctly."""
 
     def test_grounded_context_packager(self):
-        """format_grounded_evidence_context explicitly labels LIVE_PROVIDER vs WEB_SOURCE vs UNAVAILABLE."""
+        """format_grounded_evidence_context explicitly labels PROVIDER_DATA vs WEB_SOURCE vs UNAVAILABLE."""
         evidence_store = {
             "WEATHER_FORECAST": CapabilityEvidence(
                 capability="WEATHER_FORECAST",
                 provider="weather",
                 tool_name="get_current_weather",
-                evidence_kind=EvidenceKind.LIVE_PROVIDER,
+                evidence_kind=EvidenceKind.PROVIDER_DATA,
+                freshness=EvidenceFreshness.LIVE,
                 status=CapabilityHealth.AVAILABLE,
                 summary="Temperature: 20C, Sunny",
                 sources=[SourceReference(provider="OpenWeather", title="Live Tokyo Weather")],
@@ -172,6 +175,7 @@ class TestGroundingLabelsAndContextPacking(unittest.TestCase):
                 provider="tavily",
                 tool_name="tavily_search",
                 evidence_kind=EvidenceKind.WEB_SOURCE,
+                freshness=EvidenceFreshness.REFERENCE,
                 status=CapabilityHealth.AVAILABLE,
                 summary="Hotel Gracery Shinjuku near JR Station",
                 sources=[SourceReference(provider="Tavily", title="Tokyo Hotels", url="https://example.com")],
@@ -181,6 +185,7 @@ class TestGroundingLabelsAndContextPacking(unittest.TestCase):
                 provider="aviationstack",
                 tool_name="list_routes",
                 evidence_kind=EvidenceKind.UNAVAILABLE,
+                freshness=EvidenceFreshness.REFERENCE,
                 status=CapabilityHealth.UNAVAILABLE,
                 summary="Live flight data temporarily unavailable.",
             ).model_dump(),
@@ -188,9 +193,9 @@ class TestGroundingLabelsAndContextPacking(unittest.TestCase):
 
         context = format_grounded_evidence_context(evidence_store)
 
-        self.assertIn("[LIVE_PROVIDER] WEATHER_FORECAST", context)
-        self.assertIn("[WEB_SOURCE] HOTEL_WEB_RESEARCH", context)
-        self.assertIn("[UNAVAILABLE] FLIGHT_ROUTE_SEARCH", context)
+        self.assertIn("[PROVIDER_DATA - LIVE] WEATHER_FORECAST", context)
+        self.assertIn("[WEB_SOURCE - REFERENCE] HOTEL_WEB_RESEARCH", context)
+        self.assertIn("[UNAVAILABLE - REFERENCE] FLIGHT_ROUTE_SEARCH", context)
         self.assertIn("https://example.com", context)
 
 
@@ -202,7 +207,7 @@ class TestProviderTraceAndCancellation(unittest.TestCase):
         async def dummy_coro():
             return {"status": "ok"}
 
-        result, trace = asyncio.run(
+        result = asyncio.run(
             async_call_provider(
                 dummy_coro,
                 provider_name="tavily",
@@ -215,12 +220,13 @@ class TestProviderTraceAndCancellation(unittest.TestCase):
         )
 
         self.assertTrue(result.success)
+        trace = result.trace_entry
+        self.assertIsNotNone(trace)
         self.assertEqual(trace.specialist, "hotel_agent")
         self.assertEqual(trace.capability, "HOTEL_WEB_RESEARCH")
         self.assertEqual(trace.status, "AVAILABLE")
         self.assertEqual(trace.source_count, 1)
 
-        # Ensure public representation has no secrets
         pub = trace.to_public_dict()
         self.assertNotIn("api_key", str(pub).lower())
         self.assertNotIn("token", str(pub).lower())

@@ -1,8 +1,8 @@
 """
-schemas.py — TF2 Typed Pydantic models for the TripBandhu agentic core.
+schemas.py — Typed Pydantic models for the TripBandhu agentic core.
 
 Includes all structured output models used by the supervisor, guardrail,
-providers, HITL review loop, and TF2 capability evidence/provenance layer.
+providers, HITL review loop, capability evidence, provenance, and evaluation layer.
 """
 
 from __future__ import annotations
@@ -171,11 +171,21 @@ RETRYABLE_ERROR_CODES: frozenset[ErrorCode] = frozenset(
 class EvidenceKind(str, Enum):
     """Classification of evidence provenance and trustworthiness."""
 
-    LIVE_PROVIDER = "LIVE_PROVIDER"      # Verified real-time operational data (e.g. OpenWeather API)
-    WEB_SOURCE = "WEB_SOURCE"            # Search engine web results (e.g. Tavily search articles)
+    PROVIDER_DATA = "PROVIDER_DATA"      # Provider-backed structured API data
+    LIVE_PROVIDER = "PROVIDER_DATA"      # Backward compatibility alias
+    WEB_SOURCE = "WEB_SOURCE"            # Search engine web results
     MODEL_ESTIMATE = "MODEL_ESTIMATE"    # Model generated range / guidance (not live fare)
-    DERIVED = "DERIVED"                  # Derived from other verified evidence
+    DERIVED = "DERIVED"                  # Derived from verified evidence
     UNAVAILABLE = "UNAVAILABLE"          # Provider unavailable / degraded
+
+
+class EvidenceFreshness(str, Enum):
+    """Temporal and operational semantics of evidence."""
+
+    LIVE = "LIVE"                  # Real-time operational data (e.g. current weather observation)
+    FORECAST = "FORECAST"          # Multi-day forecast model data
+    REFERENCE = "REFERENCE"        # Reference/schedule database (e.g. routes, airports, airlines)
+    UNKNOWN = "UNKNOWN"            # Unspecified temporal semantics
 
 
 class CapabilityHealth(str, Enum):
@@ -195,6 +205,7 @@ class SourceReference(BaseModel):
     url: Optional[str] = Field(default=None, description="Direct URL if exposed by provider")
     observed_at: Optional[str] = Field(default=None, description="ISO timestamp when source was observed")
     evidence_kind: EvidenceKind = Field(default=EvidenceKind.WEB_SOURCE, description="Provenance kind")
+    freshness: EvidenceFreshness = Field(default=EvidenceFreshness.UNKNOWN, description="Temporal semantics")
 
 
 class CapabilityEvidence(BaseModel):
@@ -203,7 +214,8 @@ class CapabilityEvidence(BaseModel):
     capability: str = Field(description="Logical capability name, e.g. 'HOTEL_WEB_RESEARCH'")
     provider: str = Field(description="Provider name, e.g. 'tavily', 'weather', 'aviationstack'")
     tool_name: str = Field(description="Underlying MCP tool executed")
-    evidence_kind: EvidenceKind = Field(default=EvidenceKind.LIVE_PROVIDER)
+    evidence_kind: EvidenceKind = Field(default=EvidenceKind.PROVIDER_DATA)
+    freshness: EvidenceFreshness = Field(default=EvidenceFreshness.REFERENCE)
     status: CapabilityHealth = Field(default=CapabilityHealth.AVAILABLE)
     retrieved_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     latency_ms: Optional[int] = Field(default=None)
@@ -249,7 +261,8 @@ class CapabilityDefinition(BaseModel):
     server: str = Field(description="Target MCP server name")
     tool_name: str = Field(description="Target MCP tool name")
     access_mode: str = Field(default="read_only")
-    evidence_kind: EvidenceKind = Field(default=EvidenceKind.LIVE_PROVIDER)
+    evidence_kind: EvidenceKind = Field(default=EvidenceKind.PROVIDER_DATA)
+    freshness: EvidenceFreshness = Field(default=EvidenceFreshness.REFERENCE)
     description: str = Field(default="")
     required_params: list[str] = Field(default_factory=list)
 
