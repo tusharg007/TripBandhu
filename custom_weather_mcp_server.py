@@ -12,8 +12,9 @@ load_project_env()
 
 mcp = FastMCP("Weather MCP Server")
 
-OPENWEATHER_API_KEY = os.getenv(
-    "OPENWEATHER_API_KEY"
+OPENWEATHER_API_KEY = (
+    os.getenv("OPENWEATHER_API_KEY")
+    or os.getenv("OPENWEATHER_KEY")
 )
 
 REQUEST_TIMEOUT_SECONDS = 20

@@ -43,9 +43,13 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 AVIATION_STACK_API_KEY = (
     os.getenv("AVIATION_STACK_API_KEY")
     or os.getenv("AVIATIONSTACK_API_KEY")
+    or os.getenv("AVIATIONSTACK_KEY")
 )
 
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+OPENWEATHER_API_KEY = (
+    os.getenv("OPENWEATHER_API_KEY")
+    or os.getenv("OPENWEATHER_KEY")
+)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 WEATHER_SERVER_PATH = BASE_DIR / "custom_weather_mcp_server.py"

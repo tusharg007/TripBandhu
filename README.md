@@ -204,7 +204,7 @@ pip install -r requirements.txt
 
 # Configure environment variables
 cp .env.example .env
-# Edit .env with your API keys (GROQ_API_KEY, TAVILY_API_KEY, AVIATIONSTACK_KEY, OPENWEATHER_KEY)
+# Edit .env with your API keys (GROQ_API_KEY, TAVILY_API_KEY, AVIATIONSTACK_API_KEY, OPENWEATHER_API_KEY)
 
 # Start TripBandhu server
 python -m uvicorn app:app --host 0.0.0.0 --port 8000 --reload
@@ -234,8 +234,8 @@ The application will be available at [http://localhost:8000](http://localhost:80
 | :--- | :---: | :---: | :--- |
 | `GROQ_API_KEY` | **Yes** | — | Primary LLM provider key (Llama 3.3 70B Versatile) |
 | `TAVILY_API_KEY` | Optional | — | Hotel and web attraction search provider |
-| `AVIATIONSTACK_KEY` | Optional | — | Live flight schedules and airline route data |
-| `OPENWEATHER_KEY` | Optional | — | Current weather and 7-day forecast data |
+| `AVIATIONSTACK_API_KEY` | Optional | — | Live flight schedules and airline route data (alias: `AVIATION_STACK_API_KEY`) |
+| `OPENWEATHER_API_KEY` | Optional | — | Current weather and 7-day forecast data (alias: `OPENWEATHER_KEY`) |
 | `DATABASE_URL` | Optional | `""` | PostgreSQL connection string for `AsyncPostgresSaver` |
 | `MAX_REVIEW_ITERATIONS`| Optional | `10` | Bounded iteration cap for HITL review cycle |
 | `PORT` | Optional | `8000` | Application server port |

@@ -11,7 +11,11 @@ load_project_env()
 os.environ["SSL_CERT_FILE"] = certifi.where()
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 
-API_KEY = os.getenv("AVIATIONSTACK_API_KEY")
+API_KEY = (
+    os.getenv("AVIATIONSTACK_API_KEY")
+    or os.getenv("AVIATION_STACK_API_KEY")
+    or os.getenv("AVIATIONSTACK_KEY")
+)
 
 # Default origin when user says only destination, e.g. "Japan trip"
 # Change this if your default location is not INDIA/DEL.
