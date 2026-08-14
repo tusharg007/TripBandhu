@@ -429,7 +429,7 @@ function downloadPDF() {
 }
 
 function bindQuickLoadPresets() {
-    document.querySelectorAll(".quick-load, .quick-prompts button, [data-prompt]").forEach((btn) => {
+    document.querySelectorAll(".quick-load").forEach((btn) => {
         btn.addEventListener("click", (event) => {
             event.preventDefault();
             const prompt = btn.getAttribute("data-prompt") || btn.dataset.prompt;
@@ -441,15 +441,7 @@ function bindQuickLoadPresets() {
 }
 
 document.addEventListener("click", (event) => {
-    const promptButton = event.target.closest(".quick-load, .quick-prompts button, [data-prompt]");
     const tabButton = event.target.closest("[data-tab]");
-
-    if (promptButton) {
-        const prompt = promptButton.getAttribute("data-prompt") || promptButton.dataset.prompt;
-        if (prompt) {
-            setPrompt(prompt);
-        }
-    }
 
     if (tabButton && latestResponse) {
         activeTabKey = tabButton.dataset.tab;

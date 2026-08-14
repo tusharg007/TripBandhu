@@ -48,11 +48,15 @@ class ReleaseSafetyTest(unittest.TestCase):
         self.assertIn('data-prompt="Create a relaxed 4-day coastal getaway', template)
         self.assertIn('type="button" class="quick-load"', template)
 
-        # JavaScript binding & safety
+        # JavaScript binding & safety (single event strategy verification)
         self.assertIn("bindQuickLoadPresets", script)
         self.assertIn("setPrompt", script)
         self.assertIn('byId("userInput").value = text', script)
         self.assertIn('byId("userInput").focus()', script)
+
+        # Ensure no duplicate delegated handling for quick load buttons in document click listener
+        self.assertNotIn('document.addEventListener("click", (event) => {\n    const promptButton', script)
+        self.assertNotIn('promptButton = event.target.closest', script)
 
         # Ensure setPrompt only populates input and does NOT auto-submit or call API
         self.assertNotIn("setPrompt() { sendMessage", script)
