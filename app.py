@@ -10,10 +10,15 @@ from pydantic import BaseModel
 
 from backend import run_travel_agent
 
+# This is to allow nested event loops for async calls in FastAPI
+import nest_asyncio
+nest_asyncio.apply()
+
+
 BASE_DIR = Path(__file__).resolve().parent
 
 app = FastAPI(
-    title="TripBandhu AI",
+    title="TripBandhu - AI Travel Planner",
     description="LangGraph Multi-Agent Travel Planner with FastAPI Frontend",
     version="1.0.0"
 )
