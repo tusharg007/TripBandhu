@@ -1,14 +1,15 @@
 """
-schemas.py  TF1 Typed Pydantic models for the TripBandhu agentic core.
+schemas.py — TF2 Typed Pydantic models for the TripBandhu agentic core.
 
-All structured output models used by the supervisor, guardrail, providers,
-and HITL review loop are defined here for reuse across the application.
+Includes all structured output models used by the supervisor, guardrail,
+providers, HITL review loop, and TF2 capability evidence/provenance layer.
 """
 
 from __future__ import annotations
 
 from enum import Enum
 from typing import Any, Generic, Optional, TypeVar
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -18,12 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 # ---------------------------------------------------------------------------
 
 class AgentName(str, Enum):
-    """Canonical set of specialist agent identifiers.
-
-    Only these values may appear in ``selected_agents``.  The supervisor LLM
-    is prompted to return names from this set; any other value is rejected at
-    validation time.
-    """
+    """Canonical set of specialist agent identifiers."""
 
     FLIGHT = "flight_agent"
     HOTEL = "hotel_agent"
@@ -152,7 +148,7 @@ class ReviewDecision(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Provider / capability result
+# Provider / capability result & error codes
 # ---------------------------------------------------------------------------
 
 class ErrorCode(str, Enum):
@@ -163,13 +159,99 @@ class ErrorCode(str, Enum):
     UNAVAILABLE = "UNAVAILABLE"
     INVALID_RESPONSE = "INVALID_RESPONSE"
     AUTH_CONFIGURATION = "AUTH_CONFIGURATION"
+    CONTRACT_MISMATCH = "CONTRACT_MISMATCH"
     INTERNAL = "INTERNAL"
 
 
-# Whether an error code represents a transient condition worth retrying.
 RETRYABLE_ERROR_CODES: frozenset[ErrorCode] = frozenset(
     {ErrorCode.TIMEOUT, ErrorCode.RATE_LIMITED, ErrorCode.UNAVAILABLE}
 )
+
+
+class EvidenceKind(str, Enum):
+    """Classification of evidence provenance and trustworthiness."""
+
+    LIVE_PROVIDER = "LIVE_PROVIDER"      # Verified real-time operational data (e.g. OpenWeather API)
+    WEB_SOURCE = "WEB_SOURCE"            # Search engine web results (e.g. Tavily search articles)
+    MODEL_ESTIMATE = "MODEL_ESTIMATE"    # Model generated range / guidance (not live fare)
+    DERIVED = "DERIVED"                  # Derived from other verified evidence
+    UNAVAILABLE = "UNAVAILABLE"          # Provider unavailable / degraded
+
+
+class CapabilityHealth(str, Enum):
+    """Health state of an external MCP capability."""
+
+    AVAILABLE = "AVAILABLE"
+    DEGRADED = "DEGRADED"
+    UNAVAILABLE = "UNAVAILABLE"
+    CONTRACT_MISMATCH = "CONTRACT_MISMATCH"
+
+
+class SourceReference(BaseModel):
+    """A traceable source reference for evidence provenance."""
+
+    provider: str = Field(description="Name of the provider, e.g. 'Tavily', 'OpenWeather', 'AviationStack'")
+    title: str = Field(description="Title or descriptive identifier of the source")
+    url: Optional[str] = Field(default=None, description="Direct URL if exposed by provider")
+    observed_at: Optional[str] = Field(default=None, description="ISO timestamp when source was observed")
+    evidence_kind: EvidenceKind = Field(default=EvidenceKind.WEB_SOURCE, description="Provenance kind")
+
+
+class CapabilityEvidence(BaseModel):
+    """Normalized evidence produced by an MCP tool invocation."""
+
+    capability: str = Field(description="Logical capability name, e.g. 'HOTEL_WEB_RESEARCH'")
+    provider: str = Field(description="Provider name, e.g. 'tavily', 'weather', 'aviationstack'")
+    tool_name: str = Field(description="Underlying MCP tool executed")
+    evidence_kind: EvidenceKind = Field(default=EvidenceKind.LIVE_PROVIDER)
+    status: CapabilityHealth = Field(default=CapabilityHealth.AVAILABLE)
+    retrieved_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    latency_ms: Optional[int] = Field(default=None)
+    data: Any = Field(default=None, description="Normalized structured payload")
+    summary: str = Field(default="", description="Human/LLM readable concise factual summary")
+    sources: list[SourceReference] = Field(default_factory=list, description="Preserved source references")
+    error_code: Optional[ErrorCode] = Field(default=None)
+
+
+class CapabilityTraceEntry(BaseModel):
+    """Bounded, safe capability trace entry without secrets or sensitive filesystem paths."""
+
+    sequence: int = Field(default=1, description="1-based invocation order within run")
+    specialist: str = Field(default="specialist", description="Specialist agent that requested capability")
+    capability: str = Field(default="capability", description="Logical capability name")
+    server: str = Field(default="server", description="MCP server name")
+    tool_name: str = Field(default="tool", description="MCP tool name")
+    status: str = Field(default="AVAILABLE", description="AVAILABLE, DEGRADED, UNAVAILABLE, or CONTRACT_MISMATCH")
+    latency_ms: Optional[int] = Field(default=None)
+    retry_count: int = Field(default=0)
+    started_at: str = Field(default="")
+    completed_at: str = Field(default="")
+    error_code: Optional[str] = Field(default=None)
+    source_count: int = Field(default=0)
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """Safe public representation stripped of internal details."""
+        return {
+            "specialist": self.specialist,
+            "capability": self.capability,
+            "server": self.server,
+            "status": self.status,
+            "latency_ms": self.latency_ms,
+            "source_count": self.source_count,
+            "error_code": self.error_code,
+        }
+
+
+class CapabilityDefinition(BaseModel):
+    """Specification of an approved capability in the TripBandhu Capability Registry."""
+
+    capability_name: str = Field(description="Unique capability identifier")
+    server: str = Field(description="Target MCP server name")
+    tool_name: str = Field(description="Target MCP tool name")
+    access_mode: str = Field(default="read_only")
+    evidence_kind: EvidenceKind = Field(default=EvidenceKind.LIVE_PROVIDER)
+    description: str = Field(default="")
+    required_params: list[str] = Field(default_factory=list)
 
 
 T = TypeVar("T")
@@ -184,10 +266,25 @@ class CapabilityResult(BaseModel, Generic[T]):
     safe_message: Optional[str] = None
     retryable: bool = False
     latency_ms: Optional[int] = None
+    trace_entry: Optional[CapabilityTraceEntry] = None
+
+    def __iter__(self):
+        """Enable tuple unpacking: result, trace = await async_call_provider(...)"""
+        return iter((self, self.trace_entry))
 
     @classmethod
-    def ok(cls, data: Any, latency_ms: int | None = None) -> "CapabilityResult":
-        return cls(success=True, data=data, latency_ms=latency_ms)
+    def ok(
+        cls,
+        data: Any,
+        latency_ms: int | None = None,
+        trace_entry: CapabilityTraceEntry | None = None,
+    ) -> "CapabilityResult":
+        return cls(
+            success=True,
+            data=data,
+            latency_ms=latency_ms,
+            trace_entry=trace_entry,
+        )
 
     @classmethod
     def fail(
@@ -195,6 +292,7 @@ class CapabilityResult(BaseModel, Generic[T]):
         error_code: ErrorCode,
         safe_message: str,
         latency_ms: int | None = None,
+        trace_entry: CapabilityTraceEntry | None = None,
     ) -> "CapabilityResult":
         return cls(
             success=False,
@@ -202,4 +300,5 @@ class CapabilityResult(BaseModel, Generic[T]):
             safe_message=safe_message,
             retryable=error_code in RETRYABLE_ERROR_CODES,
             latency_ms=latency_ms,
+            trace_entry=trace_entry,
         )

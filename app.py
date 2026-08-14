@@ -106,6 +106,7 @@ PUBLIC_CONTRACT_DEFAULTS = {
     "human_feedback": "",
     "review_iteration": 0,
     "review_limit_reached": False,
+    "capability_trace": [],
     "llm_calls": 0,
 }
 
