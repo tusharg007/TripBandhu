@@ -18,22 +18,30 @@ class EvaluationHarnessTest(unittest.TestCase):
     """Verify evaluation harness execution and benchmark metrics."""
 
     def test_benchmark_dataset_integrity(self):
-        """Dataset has all required categories and minimum case count."""
-        self.assertGreaterEqual(len(BENCHMARK_DATASET), 15)
+        """Dataset has all 14 required categories and 50 versioned cases."""
+        self.assertEqual(len(BENCHMARK_DATASET), 50)
         categories = {case.category for case in BENCHMARK_DATASET}
-        expected_categories = {"routing", "guardrail", "capability_permissions", "groundedness", "negative_control"}
-        self.assertTrue(expected_categories.issubset(categories))
+        expected_categories = {
+            "routing", "constraints", "guardrails", "capability_selection",
+            "evidence_semantics", "groundedness", "hitl", "provider_failure",
+            "schema_drift", "cancellation", "llm_accounting", "thread_isolation",
+            "persistence", "negative_controls",
+        }
+        self.assertEqual(categories, expected_categories)
 
     def test_evaluator_fast_mode_metrics(self):
-        """Fast evaluator runs across dataset and achieves 100% on all critical invariants."""
+        """Fast evaluator runs across dataset and achieves 100% on all executed invariants."""
         evaluator = TripBandhuEvaluator()
-        metrics: EvalMetrics = asyncio.run(evaluator.run_evaluation(is_fast_mode=True))
+        metrics: EvalMetrics = asyncio.run(evaluator.run_evaluation(mode="FAST"))
 
         self.assertEqual(metrics.failed_cases, 0, "Zero failures permitted in benchmark suite")
+        self.assertEqual(metrics.executed_cases, 49)
+        self.assertEqual(metrics.skipped_cases, 1)
         self.assertEqual(metrics.routing_accuracy, 100.0)
-        self.assertEqual(metrics.guardrail_precision, 100.0)
+        self.assertEqual(metrics.constraint_accuracy, 100.0)
+        self.assertEqual(metrics.guardrail_accuracy, 100.0)
         self.assertEqual(metrics.capability_permission_compliance, 100.0)
-        self.assertEqual(metrics.evidence_label_accuracy, 100.0)
+        self.assertEqual(metrics.evidence_semantics_accuracy, 100.0)
         self.assertEqual(metrics.groundedness_anti_fabrication_rate, 100.0)
         self.assertEqual(metrics.hitl_protocol_adherence, 100.0)
         self.assertEqual(metrics.provider_degradation_safety, 100.0)

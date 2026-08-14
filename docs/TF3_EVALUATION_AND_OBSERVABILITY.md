@@ -1,96 +1,112 @@
-# TripBandhu — TF3: Evaluation, Reliability Benchmarks & Trace Observability
+# TripBandhu — TF3 / TF3.1: Evaluation, Reliability Benchmarks & Trace Observability
 
-This document details the quantitative evaluation harness, reliability benchmarks, critical safety invariants, and trace observability model implemented in **TripBandhu TF3**.
+This document details the quantitative evaluation harness, reliability benchmarks, critical safety invariants, and trace observability model implemented in **TripBandhu TF3 / TF3.1**.
 
 ---
 
-## 1. Overview & Evaluation Principles
+## 1. Separation of the Three Evidence Layers
 
-TripBandhu TF3 provides a deterministic evaluation framework and observability layer designed to measure system reliability, guardrail precision, capability permission compliance, groundedness, and human-in-the-loop (HITL) protocol adherence without requiring paid network calls.
+To prevent ambiguity or conflated metric claims, TripBandhu strictly separates its verification into three distinct, complementary layers:
 
 ```text
-Benchmark Dataset (v3.0.0, 18 Cases)
-       ↓
-Deterministic Benchmark Runner / Evaluator
-       ↓
-Specialist Execution & Checkpoint State Verification
-       ↓
-Trace Observability & Secret Scanning
-       ↓
-Quantitative Reliability Scorecard (100% Invariants)
+┌──────────────────────────────────────────────────────────────────────────┐
+│                   TRIPBANDHU THREE-TIER EVIDENCE MODEL                   │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Layer A: VERSIONED EVALUATION DATASET (v3.1.0, 50 Scenarios)             │
+│   - Behavioral contract benchmarks evaluated with real numerators/denoms │
+│   - Tests routing, constraints, guardrails, capabilities, HITL, drift    │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Layer B: PYTEST REGRESSION SUITE (88 Fast Unit / Contract Tests)         │
+│   - Granular unit assertions on classes, schemas, state graphs, and mocks │
+│   - Runs in ~4 seconds offline with 0 paid/network calls                 │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Layer C: POSTGRES CHECKPOINT INTEGRATION (1 Multi-Turn Persistence Test) │
+│   - Real multi-turn LangGraph interrupt/resume persistence               │
+│   - Proves state survival across service disposals and process restart   │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Benchmark Dataset Specification (Version 3.0.0)
+## 2. Benchmark Dataset Specification (Version 3.1.0)
 
-The evaluation suite ([`eval/eval_dataset.py`](../eval/eval_dataset.py)) consists of **18 test cases** organized across 5 critical evaluation categories:
+The evaluation suite ([`eval/eval_dataset.py`](../eval/eval_dataset.py)) contains **50 versioned test cases** across **14 distinct categories**:
 
-| Category | Cases | Evaluation Scope |
+| Category | Cases | Evaluated Behavioral Contract |
 | :--- | :--- | :--- |
-| **Routing** | 5 | Specialist-only queries (Flight, Hotel, Weather, Budget) vs Full-trip multi-specialist coordination |
-| **Guardrails** | 4 | In-domain travel requests, out-of-scope technical queries, off-topic requests, and prompt injection attacks |
-| **Capability Permissions** | 3 | Strict validation of specialist tool allowances and refined evidence semantics (`PROVIDER_DATA`, `WEB_SOURCE`, etc.) |
-| **Groundedness & Anti-Fabrication** | 3 | Degraded provider handling, pricing truth (`[MODEL ESTIMATE - Not Live Fare]`), and truthful seasonal guidance |
-| **Negative Controls** | 3 | Active verification that the evaluator fails if ungrounded fares, unauthorized tools, or cap violations occur |
+| **`routing`** | 6 | Specialist-only routes (Flight, Hotel, Weather, Budget) vs multi-specialist & full trip coordination |
+| **`constraints`** | 5 | Structured extraction of destination, origin, duration, budget, travel style, and preferences |
+| **`guardrails`** | 5 | In-domain travel, out-of-scope coding/general queries, prompt injection, and embedded tasks |
+| **`capability_selection`** | 5 | Approved specialist tool permissions, unknown capability rejection, cross-specialist denial |
+| **`evidence_semantics`** | 6 | `PROVIDER_DATA` (`REFERENCE`, `LIVE`, `FORECAST`), `WEB_SOURCE`, `MODEL_ESTIMATE`, `UNAVAILABLE` |
+| **`groundedness`** | 4 | Degraded provider handling, pricing truth (`[MODEL ESTIMATE - Not Live Fare]`), zero fake data |
+| **`hitl`** | 5 | Multi-turn interrupts, approval routing, revision feedback increment, review cap safe stop |
+| **`provider_failure`** | 4 | Classification of `TIMEOUT`, `AUTH_CONFIGURATION`, `UNAVAILABLE`, `INVALID_RESPONSE`; backoff bounds |
+| **`schema_drift`** | 2 | Missing or altered MCP tool schema detection as `CONTRACT_MISMATCH` with safe continuation |
+| **`cancellation`** | 1 | Immediate `asyncio.CancelledError` pass-through with 0 retries |
+| **`llm_accounting`** | 2 | Exact model invocation accounting (`hotel_agent` $= 0$, `extract_destination_async` $= 1$) |
+| **`thread_isolation`** | 1 | Thread A (Japan full trip) vs Thread B (Dubai flight-only) maintain disjoint state |
+| **`persistence`** | 1 | Multi-turn checkpoint survival across service destruction and recreation |
+| **`negative_controls`** | 3 | Evaluator sensitivity testing (catches ungrounded fares, unauthorized tools, auto-approvals) |
 
 ---
 
-## 3. Evidence Semantics & Freshness Model
+## 3. Evaluator Modes
 
-Following the TF3 preflight semantic refinement, evidence is typed by provenance and temporal freshness:
+1. **`FAST` (Default Offline Mode)**:
+   - Evaluates **49 deterministic cases** in $<1$ second with 0 network or database dependencies.
+   - Case 47 (`PERSISTENCE_POSTGRES_RESTART`) is marked as `SKIPPED` without inflating the success score.
+2. **`POSTGRES` (Integration Mode: `python -m eval.evaluator --postgres`)**:
+   - Executes all **50 cases** including the live PostgreSQL multi-turn recreation flow against a real database.
+3. **`OPTIONAL LIVE`**:
+   - Small non-destructive live MCP discovery and server compatibility check.
+
+---
+
+## 4. Real Metric Denominators & Scorecard (Version 3.1.0)
+
+### Category Breakdown (Numerator / Denominator)
 
 ```text
-EvidenceKind
-├── PROVIDER_DATA   (Structured API data from verified providers)
-├── WEB_SOURCE      (Search engine / web article citations)
-├── MODEL_ESTIMATE  (Model-generated planning ranges & estimates)
-├── DERIVED         (Derived from verified evidence)
-└── UNAVAILABLE     (Degraded / unreachable service)
-
-EvidenceFreshness
-├── LIVE            (Real-time meteorological observations)
-├── FORECAST        (Multi-day weather forecasts)
-├── REFERENCE       (Flight routes, airport codes, airline databases)
-└── UNKNOWN         (Unspecified temporal semantics)
+  - routing               : 6/6 (total in category: 6)
+  - constraints           : 5/5 (total in category: 5)
+  - guardrails            : 5/5 (total in category: 5)
+  - capability_selection  : 5/5 (total in category: 5)
+  - evidence_semantics    : 6/6 (total in category: 6)
+  - groundedness          : 4/4 (total in category: 4)
+  - hitl                  : 5/5 (total in category: 5)
+  - provider_failure      : 4/4 (total in category: 4)
+  - schema_drift          : 2/2 (total in category: 2)
+  - cancellation          : 1/1 (total in category: 1)
+  - llm_accounting        : 2/2 (total in category: 2)
+  - thread_isolation      : 1/1 (total in category: 1)
+  - persistence           : 1/1 in POSTGRES mode (0/0 in FAST mode, 1 skipped)
+  - negative_controls     : 3/3 (total in category: 3)
 ```
 
-### Capability Mappings
-- **AviationStack (`list_routes`, `list_airports`, `list_airlines`)**: `PROVIDER_DATA` + `REFERENCE`
-- **OpenWeather (`get_current_weather`)**: `PROVIDER_DATA` + `LIVE`
-- **OpenWeather (`get_forecast`)**: `PROVIDER_DATA` + `FORECAST`
-- **Tavily (`tavily_search`)**: `WEB_SOURCE` + `REFERENCE`
-- **Budget Agent Allowances**: `MODEL_ESTIMATE`
-
----
-
-## 4. Quantitative Benchmark Scorecard
-
-| Metric | Score | Target | Status |
-| :--- | :--- | :--- | :--- |
-| **Routing Accuracy** | **100.0%** | $\ge 95\%$ | **PASS** |
-| **Constraint Extraction Accuracy** | **100.0%** | $\ge 95\%$ | **PASS** |
-| **Guardrail Precision & Recall** | **100.0%** | $100\%$ | **PASS** |
-| **Capability Permission Compliance** | **100.0%** | $100\%$ | **PASS** |
-| **Evidence Label Accuracy** | **100.0%** | $100\%$ | **PASS** |
-| **Groundedness / Anti-Fabrication Rate** | **100.0%** | $100\%$ | **PASS** |
-| **HITL Protocol Adherence** | **100.0%** | $100\%$ | **PASS** |
-| **Provider Degradation Safety** | **100.0%** | $100\%$ | **PASS** |
-| **Thread Isolation Integrity** | **100.0%** | $100\%$ | **PASS** |
-| **Cancellation Safety** | **100.0%** | $100\%$ | **PASS** |
-| **Schema Drift Detection Rate** | **100.0%** | $100\%$ | **PASS** |
-| **LLM Call Accounting Accuracy** | **100.0%** | $100\%$ | **PASS** |
-| **Critical Safety Invariants** | **100.0%** | $100\%$ | **PASS** |
-| **Negative Controls Sensitivity** | **100.0%** | $100\%$ | **PASS** |
-| **Trace Safety Compliance (Zero Secrets)**| **100.0%** | $100\%$ | **PASS** |
+### Measured Reliability Scores
+- **Routing Accuracy**: **100.0%** ($6/6$)
+- **Constraint Extraction Accuracy**: **100.0%** ($5/5$)
+- **Guardrail Precision & Recall**: **100.0%** ($5/5$)
+- **Capability Permission Compliance**: **100.0%** ($5/5$)
+- **Evidence Semantics Accuracy**: **100.0%** ($6/6$)
+- **Groundedness & Anti-Fabrication Rate**: **100.0%** ($4/4$)
+- **HITL Protocol Adherence**: **100.0%** ($5/5$)
+- **Provider Resilience**: **100.0%** ($4/4$)
+- **Schema Drift Detection**: **100.0%** ($2/2$)
+- **Cancellation Safety**: **100.0%** ($1/1$)
+- **LLM Accounting Accuracy**: **100.0%** ($2/2$)
+- **Thread Isolation Integrity**: **100.0%** ($1/1$)
+- **Persistence Pass Rate**: **100.0%** ($1/1$ in POSTGRES mode)
+- **Negative Controls Sensitivity**: **100.0%** ($3/3$)
+- **Critical Safety Invariants (100% Target)**: **100.0%** ($5/5$ Invariants Maintained)
+- **Trace Safety Compliance (Zero Secrets)**: **100.0%** (Clean)
 
 ---
 
 ## 5. Trace Observability & Secret Scanning
 
-The trace observability module ([`eval/trace_observability.py`](../eval/trace_observability.py)) enforces that all runtime capability traces adhere to the public safety contract:
-
-### Public Trace Schema
+The trace observability module ([`eval/trace_observability.py`](../eval/trace_observability.py)) verifies that all capability trace entries adhere to the public schema:
 ```json
 {
   "specialist": "flight_agent",
@@ -103,30 +119,23 @@ The trace observability module ([`eval/trace_observability.py`](../eval/trace_ob
 }
 ```
 
-### Automated Secret Scanning
-All traces are scanned against regex rules detecting:
-- Groq API keys (`gsk_...`)
-- Tavily API keys (`tvly-...`)
-- Database connection URIs (`postgresql://...`)
-- Bearer tokens and passwords
-- Absolute filesystem paths
-
-Zero secrets or internal paths are leaked to the client.
+Traces are automatically scanned with regex filters detecting API keys (`gsk_...`, `tvly-...`), tokens, passwords, database credentials, and local directory paths.
 
 ---
 
 ## 6. Critical Safety Invariants
 
-1. **Review Cap Approval Invariant**: 10 rejections strictly route to `review_limit_reached` with `approved=False`. Reaching the review cap **never** produces an auto-approved travel plan.
-2. **Specialist-Only Invariant**: Dedicated single-specialist queries (e.g. flight-only) execute directly to final response without forcing `itinerary_agent` or triggering interrupts.
-3. **Flight Pricing Invariant**: Flight fares are strictly tagged `[MODEL ESTIMATE - Not Live Fare]`; agents never claim live fares were verified without a live ticketing provider.
-4. **Cancellation Invariant**: `asyncio.CancelledError` immediately bubbles up without being caught or masked as a generic error.
-5. **Thread Isolation Invariant**: Concurrent or separate thread IDs maintain completely disjoint checkpoint state.
+1. **Defensive Review Cap**: 10 rejections strictly route to `review_limit_reached` with `approved=False`. Reaching the review cap **never** produces an approved travel plan.
+2. **Dynamic Specialist Routing**: Specialist-only queries execute directly to final response without forcing `itinerary_agent` or triggering interrupts.
+3. **Flight Pricing Truth**: Flight fares are strictly tagged `[MODEL ESTIMATE - Not Live Fare]`; agents never claim live fares were verified without a live ticketing provider.
+4. **Cancellation Safety**: `asyncio.CancelledError` immediately bubbles up without being caught or masked as a generic error.
+5. **Thread Isolation**: Concurrent or separate thread IDs maintain completely disjoint checkpoint state.
 
 ---
 
 ## 7. Prerequisites for TF4
 
 - Agent core, evidence layer, and evaluation harness fully verified and frozen.
-- All 89 fast unit, contract, and evaluation tests passing.
+- 89 automated tests passing with 100% invariant scores.
 - PostgreSQL checkpoint persistence verified across restart.
+- Ready for production hardening, Docker build verification, and deployment packaging.
