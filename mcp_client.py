@@ -10,6 +10,7 @@ import certifi
 from langchain_groq import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from project_config import PROJECT_ROOT, load_project_env
+from agent_config import GROQ_CONTROL_MODEL, LLM_REASONING_EFFORT, LLM_REASONING_FORMAT, MAX_TOKENS_BY_TASK
 
 from schemas import (
     CapabilityHealth,
@@ -77,12 +78,46 @@ def _subprocess_env(**updates: str | None) -> dict[str, str]:
 
 
 # =========================================================
-# LLM
+# LLM Factory
 # =========================================================
 
-llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    api_key=GROQ_API_KEY or "dummy_ci_key",
+def make_groq_llm(
+    model_id: str,
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
+    reasoning_format: str | None = None,
+    **extra_kwargs,
+) -> ChatGroq:
+    """
+    Factory for ChatGroq instances used across backend and mcp_client.
+
+    All ChatGroq instances MUST be created through this function so that:
+    - model ID, api_key, and max_retries are never silently inconsistent.
+    - max_retries=0 ensures the Groq SDK / LangChain client does NOT perform
+      hidden automatic 429 retries. Our llm_utils.invoke_llm() owns all retries.
+    """
+    kwargs: dict[str, Any] = dict(
+        model=model_id,
+        api_key=GROQ_API_KEY or "dummy_ci_key",
+        max_retries=0,
+        **extra_kwargs,
+    )
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
+    if reasoning_format is not None:
+        kwargs["reasoning_format"] = reasoning_format
+    return ChatGroq(**kwargs)
+
+
+# Destination extractor LLM — control model, tiny token budget (city name only).
+# Used only when supervisor destination is absent (normal trips skip this call).
+llm = make_groq_llm(
+    GROQ_CONTROL_MODEL,
+    max_tokens=MAX_TOKENS_BY_TASK["destination_extract"],
+    reasoning_effort=LLM_REASONING_EFFORT,
+    reasoning_format=LLM_REASONING_FORMAT,
 )
 
 

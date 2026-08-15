@@ -25,7 +25,6 @@ from langchain_core.messages import (
     AIMessage,
     SystemMessage,
 )
-from langchain_groq import ChatGroq
 
 from mcp_client import (
     tavily_mcp_search,
@@ -33,6 +32,7 @@ from mcp_client import (
     extract_destination_async,
     forecast_mcp_search,
     weather_mcp_search,
+    make_groq_llm,
 )
 from schemas import (
     AgentName,
@@ -48,6 +48,7 @@ from schemas import (
     CapabilityHealth,
     EvidenceKind,
     SourceReference,
+    RunStatus,
 )
 from capability_registry import (
     CAPABILITY_REGISTRY,
@@ -58,8 +59,17 @@ from capability_registry import (
     normalize_flight_results,
     format_grounded_evidence_context,
 )
-from agent_config import PROVIDER_TIMEOUT_SECONDS, MAX_REVIEW_ITERATIONS
+from agent_config import (
+    PROVIDER_TIMEOUT_SECONDS,
+    MAX_REVIEW_ITERATIONS,
+    GROQ_CONTROL_MODEL,
+    GROQ_GENERATION_MODEL,
+    LLM_REASONING_EFFORT,
+    LLM_REASONING_FORMAT,
+    MAX_TOKENS_BY_TASK,
+)
 from provider_utils import async_call_provider
+from llm_utils import invoke_llm, merge_token_usage
 
 
 def get_database_url() -> str | None:
@@ -76,15 +86,34 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY") or ""
 DATABASE_URL = get_database_url() or ""
 
 # =========================
-# LLM instances
+# LLM instances — two base clients + task-specific bound variants
 # =========================
-llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    api_key=GROQ_API_KEY or "dummy_ci_groq_key",
+# Base clients (no shared HTTP client re-creation per call)
+_llm_control = make_groq_llm(
+    GROQ_CONTROL_MODEL,
+    reasoning_effort=LLM_REASONING_EFFORT,
+    reasoning_format=LLM_REASONING_FORMAT,
+)
+_llm_generation = make_groq_llm(
+    GROQ_GENERATION_MODEL,
+    reasoning_effort=LLM_REASONING_EFFORT,
+    reasoning_format=LLM_REASONING_FORMAT,
 )
 
-_llm_supervisor = llm.with_structured_output(SupervisorDecision)
-_llm_guardrail = llm.with_structured_output(GuardrailDecision)
+# Task-specific bound variants (preserve base clients, control per-task output size)
+_llm_guardrail = _llm_control.bind(
+    max_tokens=MAX_TOKENS_BY_TASK["guardrail"]
+).with_structured_output(GuardrailDecision, method="json_schema")
+
+_llm_supervisor = _llm_control.bind(
+    max_tokens=MAX_TOKENS_BY_TASK["supervisor"]
+).with_structured_output(SupervisorDecision, method="json_schema")
+
+_llm_budget   = _llm_control.bind(max_tokens=MAX_TOKENS_BY_TASK["budget"])
+_llm_flight   = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["flight_summary"])
+_llm_itinerary = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["itinerary"])
+_llm_revision  = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["revision"])
+_llm_final     = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["final_synthesis"])
 
 
 # =========================
@@ -125,7 +154,12 @@ class TravelState(TypedDict, total=False):
     evidence_store: dict[str, dict]
     capability_trace: list[dict]
 
+    # LLM accounting
     llm_calls: int
+    llm_token_usage: dict[str, int]  # prompt_tokens, completion_tokens, total_tokens
+
+    # Run outcome
+    run_status: str  # RunStatus enum value
 
 
 # =========================
@@ -146,6 +180,9 @@ WEATHER_UNAVAILABLE_MESSAGE = (
     "Live weather forecast is temporarily unavailable for this destination. "
     "General seasonal guidance will be provided."
 )
+
+# Sentinel value for itinerary generation failure — used by routing logic.
+_ITINERARY_FAILURE_SENTINEL = "Draft itinerary could not be generated."
 
 _TRAVEL_KEYWORDS = frozenset({
     "trip", "travel", "flight", "hotel", "destination", "tour", "vacation",
@@ -186,6 +223,7 @@ def _incr_llm(state: "TravelState", n: int = 1) -> int:
 async def supervisor_agent(state: TravelState):
     query = state["user_query"]
     llm_calls = state.get("llm_calls", 0)
+    llm_token_usage = dict(state.get("llm_token_usage", {}))
 
     guardrail_system = (
         "You are the input guardrail for a travel-planning application. "
@@ -196,11 +234,14 @@ async def supervisor_agent(state: TravelState):
     guardrail_user = f"User request:\n{query}"
 
     try:
-        async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS["llm_structured"]):
-            gd: GuardrailDecision = await _llm_guardrail.ainvoke(
-                [SystemMessage(content=guardrail_system), HumanMessage(content=guardrail_user)]
-            )
+        gd, gd_tokens = await invoke_llm(
+            _llm_guardrail,
+            [SystemMessage(content=guardrail_system), HumanMessage(content=guardrail_user)],
+            task_name="guardrail",
+            timeout_s=PROVIDER_TIMEOUT_SECONDS["llm_structured"],
+        )
         llm_calls += 1
+        llm_token_usage = merge_token_usage(llm_token_usage, gd_tokens)
         allowed = gd.allowed
         guardrail_reason = gd.reason
     except Exception as exc:
@@ -226,6 +267,8 @@ async def supervisor_agent(state: TravelState):
             "evidence_store": {},
             "capability_trace": [],
             "llm_calls": llm_calls,
+            "llm_token_usage": llm_token_usage,
+            "run_status": RunStatus.BLOCKED.value,
         }
 
     supervisor_system = (
@@ -250,11 +293,14 @@ async def supervisor_agent(state: TravelState):
     )
 
     try:
-        async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS["llm_structured"]):
-            decision: SupervisorDecision = await _llm_supervisor.ainvoke(
-                [SystemMessage(content=supervisor_system), HumanMessage(content=supervisor_user)]
-            )
+        decision, sv_tokens = await invoke_llm(
+            _llm_supervisor,
+            [SystemMessage(content=supervisor_system), HumanMessage(content=supervisor_user)],
+            task_name="supervisor",
+            timeout_s=PROVIDER_TIMEOUT_SECONDS["llm_structured"],
+        )
         llm_calls += 1
+        llm_token_usage = merge_token_usage(llm_token_usage, sv_tokens)
 
         raw_selected = {a.value for a in decision.selected_agents}
         selected_agents = [name for name in AGENT_ORDER if name in raw_selected]
@@ -291,6 +337,8 @@ async def supervisor_agent(state: TravelState):
         "evidence_store": state.get("evidence_store", {}),
         "capability_trace": state.get("capability_trace", []),
         "llm_calls": llm_calls,
+        "llm_token_usage": llm_token_usage,
+        "run_status": RunStatus.COMPLETED.value,
     }
 
 
@@ -335,13 +383,12 @@ async def flight_agent(state: TravelState):
     orig = constraints.get("origin") or ""
     statuses = dict(state.get("specialist_statuses", {}))
     llm_calls = state.get("llm_calls", 0)
+    llm_token_usage = dict(state.get("llm_token_usage", {}))
     trace = list(state.get("capability_trace", []))
     evidence_store = dict(state.get("evidence_store", {}))
 
-    # Validate permission
     validate_specialist_capability("flight_agent", "FLIGHT_ROUTE_SEARCH")
 
-    # 1. Attempt Route-Specific Search (list_routes)
     routes_result = await async_call_provider(
         lambda: aviation_mcp_call("list_routes"),
         provider_name="aviation",
@@ -355,7 +402,6 @@ async def flight_agent(state: TravelState):
         routes_result.trace_entry.sequence = len(trace) + 1
         trace.append(routes_result.trace_entry.model_dump())
 
-    # 2. Reference Airport & Airline Lookups
     airports_result = await async_call_provider(
         lambda: aviation_mcp_call("list_airports"),
         provider_name="aviation",
@@ -382,7 +428,6 @@ async def flight_agent(state: TravelState):
         airlines_result.trace_entry.sequence = len(trace) + 1
         trace.append(airlines_result.trace_entry.model_dump())
 
-    # If all AviationStack calls failed -> Degraded
     if not (routes_result.success or airports_result.success or airlines_result.success):
         statuses["flight_agent"] = "DEGRADED"
         ev_unavailable = CapabilityEvidence(
@@ -404,9 +449,9 @@ async def flight_agent(state: TravelState):
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Flight data unavailable.")],
             "llm_calls": llm_calls,
+            "llm_token_usage": llm_token_usage,
         }
 
-    # Normalize evidence
     flight_ev = normalize_flight_results(
         routes_data=routes_result.data if routes_result.success else None,
         airports_data=airports_result.data if airports_result.success else None,
@@ -424,13 +469,15 @@ async def flight_agent(state: TravelState):
             destination=dest,
             flight_evidence=flight_ev.summary,
         )
-        async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS["llm"]):
-            response = await llm.ainvoke(
-                [
-                    SystemMessage(content="You are an expert travel flight planner."),
-                    HumanMessage(content=prompt),
-                ]
-            )
+        response, tokens = await invoke_llm(
+            _llm_flight,
+            [
+                SystemMessage(content="You are an expert travel flight planner."),
+                HumanMessage(content=prompt),
+            ],
+            task_name="flight_summary",
+        )
+        llm_token_usage = merge_token_usage(llm_token_usage, tokens)
         statuses["flight_agent"] = "COMPLETED"
         return {
             "flight_results": response.content,
@@ -440,6 +487,7 @@ async def flight_agent(state: TravelState):
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Flight recommendations generated.")],
             "llm_calls": llm_calls + 1,
+            "llm_token_usage": llm_token_usage,
         }
     except Exception as exc:
         print(f"[flight_agent] LLM call failed: {type(exc).__name__}: {exc}", flush=True)
@@ -452,6 +500,7 @@ async def flight_agent(state: TravelState):
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Flight data unavailable.")],
             "llm_calls": llm_calls,
+            "llm_token_usage": llm_token_usage,
         }
 
 
@@ -492,6 +541,7 @@ async def hotel_agent(state: TravelState):
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Hotel information processed.")],
             "llm_calls": state.get("llm_calls", 0),
+            "llm_token_usage": state.get("llm_token_usage", {}),
         }
     else:
         statuses["hotel_agent"] = "DEGRADED"
@@ -514,27 +564,35 @@ async def hotel_agent(state: TravelState):
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Hotel data unavailable.")],
             "llm_calls": state.get("llm_calls", 0),
+            "llm_token_usage": state.get("llm_token_usage", {}),
         }
 
 
 # =========================
 # Weather Agent — OpenWeather MCP & Normalization
+# Phase 3: Destination priority — supervisor constraints > LLM fallback
 # =========================
 async def weather_agent(state: TravelState):
     statuses = dict(state.get("specialist_statuses", {}))
     llm_calls = state.get("llm_calls", 0)
+    llm_token_usage = dict(state.get("llm_token_usage", {}))
     trace = list(state.get("capability_trace", []))
     evidence_store = dict(state.get("evidence_store", {}))
 
     validate_specialist_capability("weather_agent", "WEATHER_CURRENT")
 
-    try:
-        async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS["llm"]):
-            city = await extract_destination_async(state["user_query"])
-        llm_calls += 1
-    except Exception as exc:
-        print(f"[weather_agent] Destination extraction failed: {exc}", flush=True)
-        city = state.get("trip_constraints", {}).get("destination") or "your destination"
+    # Priority 1: Use supervisor-extracted destination (avoids redundant LLM call on normal trips)
+    city = (state.get("trip_constraints") or {}).get("destination") or ""
+
+    # Priority 2: LLM fallback — only when destination is genuinely absent from constraints
+    if not city:
+        try:
+            async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS["llm_structured"]):
+                city = await extract_destination_async(state["user_query"])
+            llm_calls += 1
+        except Exception as exc:
+            print(f"[weather_agent] Destination extraction failed: {exc}", flush=True)
+            city = "your destination"
 
     weather_result = await async_call_provider(
         lambda: weather_mcp_search(city),
@@ -580,9 +638,10 @@ async def weather_agent(state: TravelState):
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Weather information processed.")],
             "llm_calls": llm_calls,
+            "llm_token_usage": llm_token_usage,
         }
     else:
-        dest = state.get("trip_constraints", {}).get("destination") or city or "your destination"
+        dest = (state.get("trip_constraints") or {}).get("destination") or city or "your destination"
         weather_text = (
             f"Live weather information for {dest} is temporarily unavailable. "
             "General seasonal guidance will be provided; check current forecasts closer to departure."
@@ -607,44 +666,59 @@ async def weather_agent(state: TravelState):
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Weather data unavailable.")],
             "llm_calls": llm_calls,
+            "llm_token_usage": llm_token_usage,
         }
 
 
 # =========================
-# Budget Agent — Grounded Budget Feasibility & Pricing Truth
+# Budget Agent
+# Phase 4+5: Control model, task-specific token budget, stable instructions first
 # =========================
+_BUDGET_SYSTEM = (
+    "You are a practical travel budget analyst.\n\n"
+    "CRITICAL GROUNDEDNESS RULES:\n"
+    "- DO NOT invent exact flight fares or prices if flight data is unavailable or schedule-only.\n"
+    "- All flight cost estimations MUST be explicitly marked: '[MODEL ESTIMATE - Not Live Fare]'.\n"
+    "- AviationStack does not supply live ticket prices. If flight data is unavailable or schedule-only, "
+    "state clearly that airfare is estimated and must be verified.\n"
+    "- Web hotel rates are search-based approximations ([WEB_SOURCE]); do not present them as locked booking rates.\n"
+    "- Clearly differentiate verified provider data from model estimation categories."
+)
+
+
 async def budget_agent(state: TravelState):
     statuses = dict(state.get("specialist_statuses", {}))
     evidence_context = format_grounded_evidence_context(state.get("evidence_store", {}))
+    llm_token_usage = dict(state.get("llm_token_usage", {}))
 
     prompt = (
-        "Analyze whether this trip is realistic for the user's budget.\n\n"
+        f"Analyze whether this trip is realistic for the user's budget.\n\n"
         f"User Query:\n{state['user_query']}\n\n"
         f"Trip Constraints:\n{state.get('trip_constraints', {})}\n\n"
         f"Grounded Provider & Web Evidence:\n{evidence_context}\n\n"
-        "CRITICAL GROUNDEDNESS RULES:\n"
-        "- DO NOT invent exact flight fares or prices if flight data is unavailable or schedule-only.\n"
-        "- All flight cost estimations MUST be explicitly marked: '[MODEL ESTIMATE - Not Live Fare]'.\n"
-        "- AviationStack does not supply live ticket prices. If flight data is unavailable or schedule-only, state clearly that airfare is estimated and must be verified.\n"
-        "- Web hotel rates are search-based approximations ([WEB_SOURCE]); do not present them as locked booking rates.\n"
-        "- Clearly differentiate verified provider data from model estimation categories.\n\n"
-        "Return:\n1. Estimated cost breakdown by category\n2. Budget feasibility assessment\n3. Cost-saving recommendations\n4. Risk areas"
+        "Return:\n1. Estimated cost breakdown by category\n"
+        "2. Budget feasibility assessment\n"
+        "3. Cost-saving recommendations\n"
+        "4. Risk areas"
     )
 
     try:
-        async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS["llm"]):
-            response = await llm.ainvoke(
-                [
-                    SystemMessage(content="You are a practical travel budget analyst."),
-                    HumanMessage(content=prompt),
-                ]
-            )
+        response, tokens = await invoke_llm(
+            _llm_budget,
+            [
+                SystemMessage(content=_BUDGET_SYSTEM),
+                HumanMessage(content=prompt),
+            ],
+            task_name="budget",
+        )
+        llm_token_usage = merge_token_usage(llm_token_usage, tokens)
         statuses["budget_agent"] = "COMPLETED"
         return {
             "budget_results": response.content,
             "specialist_statuses": statuses,
             "messages": [AIMessage(content="Budget assessment generated.")],
             "llm_calls": _incr_llm(state),
+            "llm_token_usage": llm_token_usage,
         }
     except Exception as exc:
         print(f"[budget_agent] LLM call failed: {exc}", flush=True)
@@ -654,107 +728,165 @@ async def budget_agent(state: TravelState):
             "specialist_statuses": statuses,
             "messages": [AIMessage(content="Budget estimation failed.")],
             "llm_calls": state.get("llm_calls", 0),
+            "llm_token_usage": llm_token_usage,
         }
 
 
 # =========================
 # Itinerary Agent
+# Phase 4+5: Generation model; Phase 6: DEGRADED does NOT set approval_request
 # =========================
+_ITINERARY_SYSTEM = (
+    "You are an expert travel planner.\n\n"
+    "CRITICAL GROUNDEDNESS RULES:\n"
+    "- DO NOT invent or fabricate flight prices or live flight schedules if flight data is unavailable.\n"
+    "- If flight data is marked [UNAVAILABLE], state clearly: "
+    "'Live flight data was unavailable; check schedules with airlines.' "
+    "Do NOT fabricate fake flight numbers or fake price ranges.\n"
+    "- For hotel recommendations from web sources ([WEB_SOURCE]), preserve neighborhood and accommodation names.\n"
+    "- Never invent factual data that contradicts the Grounded Evidence section."
+)
+
+
 async def itinerary_agent(state: TravelState):
     statuses = dict(state.get("specialist_statuses", {}))
     evidence_context = format_grounded_evidence_context(state.get("evidence_store", {}))
+    llm_token_usage = dict(state.get("llm_token_usage", {}))
 
     prompt = (
-        "Create a complete travel itinerary for human review.\n\n"
+        f"Create a complete travel itinerary for human review.\n\n"
         f"User Query:\n{state['user_query']}\n\n"
         f"Trip Constraints:\n{state.get('trip_constraints', {})}\n\n"
         f"Grounded Evidence & Provenance:\n{evidence_context}\n\n"
         f"Budget Analysis:\n{state.get('budget_results', '')}\n\n"
-        "CRITICAL GROUNDEDNESS RULES:\n"
-        "- DO NOT invent or fabricate flight prices or live flight schedules if flight data is unavailable.\n"
-        "- If flight data is marked [UNAVAILABLE], state clearly: 'Live flight data was unavailable; check schedules with airlines.' Do NOT fabricate fake flight numbers or fake price ranges.\n"
-        "- For hotel recommendations from web sources ([WEB_SOURCE]), preserve neighborhood and accommodation names.\n"
-        "- Never invent factual data that contradicts the Grounded Evidence section.\n\n"
         "Make the itinerary practical, budget-aware, and ready for human review."
     )
 
     try:
-        async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS["llm"]):
-            response = await llm.ainvoke(
-                [
-                    SystemMessage(content="You are an expert travel planner."),
-                    HumanMessage(content=prompt),
-                ]
-            )
+        response, tokens = await invoke_llm(
+            _llm_itinerary,
+            [
+                SystemMessage(content=_ITINERARY_SYSTEM),
+                HumanMessage(content=prompt),
+            ],
+            task_name="itinerary",
+        )
+        llm_token_usage = merge_token_usage(llm_token_usage, tokens)
         statuses["itinerary_agent"] = "COMPLETED"
         itinerary_content = response.content
         llm_calls = _incr_llm(state)
+        approval_request = (
+            "Please review the generated draft itinerary. Approve it to create the "
+            "final polished plan, or provide feedback for revision."
+        )
     except Exception as exc:
         print(f"[itinerary_agent] LLM call failed: {exc}", flush=True)
         statuses["itinerary_agent"] = "DEGRADED"
-        itinerary_content = "Draft itinerary could not be generated."
+        itinerary_content = _ITINERARY_FAILURE_SENTINEL
         llm_calls = state.get("llm_calls", 0)
+        # PHASE 6: Do NOT set approval_request when DEGRADED — route_after_itinerary
+        # will bypass human_review and send the run directly to itinerary_degraded_agent.
+        approval_request = ""
 
     return {
         "itinerary": itinerary_content,
-        "approval_request": (
-            "Please review the generated draft itinerary. Approve it to create the "
-            "final polished plan, or provide feedback for revision."
-        ),
+        "approval_request": approval_request,
         "specialist_statuses": statuses,
         "messages": [AIMessage(content="Draft itinerary created for human review.")],
         "llm_calls": llm_calls,
+        "llm_token_usage": llm_token_usage,
     }
 
 
 # =========================
 # Itinerary Revision Agent
+# Phase 4+5: Generation model; Phase 6: DEGRADED also routes away from human_review
 # =========================
+_REVISION_SYSTEM = (
+    "You are an expert travel planner revising an itinerary based on feedback.\n\n"
+    "CRITICAL GROUNDEDNESS RULES:\n"
+    "- Never fabricate specific fares or live booking details when specialist data is marked unavailable.\n"
+    "- Apply the feedback accurately while maintaining grounded facts."
+)
+
+
 async def itinerary_revision_agent(state: TravelState):
     statuses = dict(state.get("specialist_statuses", {}))
     feedback = state.get("human_feedback", "").strip() or "Please improve the draft itinerary."
     iteration = state.get("review_iteration", 0)
     evidence_context = format_grounded_evidence_context(state.get("evidence_store", {}))
+    llm_token_usage = dict(state.get("llm_token_usage", {}))
 
     prompt = (
-        "You previously drafted a travel itinerary. The human reviewer has requested a revision.\n\n"
+        f"You previously drafted a travel itinerary. The human reviewer has requested a revision.\n\n"
         f"Original User Query:\n{state['user_query']}\n\n"
         f"Human Reviewer Feedback (apply carefully):\n{feedback}\n\n"
         f"Previous Draft Itinerary:\n{state.get('itinerary', '')}\n\n"
         f"Grounded Evidence & Provenance:\n{evidence_context}\n\n"
-        "CRITICAL GROUNDEDNESS RULES:\n"
-        "- Never fabricate specific fares or live booking details when specialist data is marked unavailable.\n"
-        "- Apply the feedback accurately while maintaining grounded facts.\n\n"
         "Produce a revised travel itinerary that directly addresses the feedback."
     )
 
     try:
-        async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS["llm"]):
-            response = await llm.ainvoke(
-                [
-                    SystemMessage(content="You are an expert travel planner revising an itinerary based on feedback."),
-                    HumanMessage(content=prompt),
-                ]
-            )
+        response, tokens = await invoke_llm(
+            _llm_revision,
+            [
+                SystemMessage(content=_REVISION_SYSTEM),
+                HumanMessage(content=prompt),
+            ],
+            task_name="revision",
+        )
+        llm_token_usage = merge_token_usage(llm_token_usage, tokens)
         statuses["itinerary_agent"] = "COMPLETED"
         revised_itinerary = response.content
         llm_calls = _incr_llm(state)
+        approval_request = (
+            f"Revised itinerary (revision {iteration + 1}). "
+            "Please review and approve, or provide further feedback."
+        )
     except Exception as exc:
         print(f"[itinerary_revision_agent] LLM call failed: {exc}", flush=True)
         statuses["itinerary_agent"] = "DEGRADED"
-        revised_itinerary = state.get("itinerary", "Draft itinerary could not be revised.")
+        revised_itinerary = state.get("itinerary", _ITINERARY_FAILURE_SENTINEL)
         llm_calls = state.get("llm_calls", 0)
+        approval_request = ""  # PHASE 6: bypass human_review on failure
 
     return {
         "itinerary": revised_itinerary,
-        "approval_request": (
-            f"Revised itinerary (revision {iteration + 1}). "
-            "Please review and approve, or provide further feedback."
-        ),
+        "approval_request": approval_request,
         "specialist_statuses": statuses,
         "review_iteration": iteration + 1,
         "messages": [AIMessage(content=f"Itinerary revised (iteration {iteration + 1}).")],
         "llm_calls": llm_calls,
+        "llm_token_usage": llm_token_usage,
+    }
+
+
+# =========================
+# Itinerary Degraded Agent (Phase 6 — new node)
+# Handles failed itinerary generation: truthful message, no approval gate.
+# =========================
+async def itinerary_degraded_agent(state: TravelState):
+    """
+    Called when itinerary_agent (or itinerary_revision_agent) fails (DEGRADED).
+    Produces a truthful degraded response without entering human_review.
+    Never invents a fallback itinerary.
+    """
+    statuses = dict(state.get("specialist_statuses", {}))
+    statuses["itinerary_agent"] = "DEGRADED"
+
+    degraded_msg = (
+        "The draft itinerary could not be generated in this run — "
+        "the AI generation step did not complete successfully. "
+        "Please retry your request. If the problem persists, it may be due to a "
+        "temporary service interruption or provider resource limit.\n\n"
+        "All other specialist results (flights, hotels, weather, budget) remain available above."
+    )
+    return {
+        "final_response": degraded_msg,
+        "approval_request": "",
+        "run_status": RunStatus.DEGRADED.value,
+        "specialist_statuses": statuses,
+        "messages": [AIMessage(content=degraded_msg)],
     }
 
 
@@ -801,11 +933,52 @@ async def human_review_node(state: TravelState):
 
 # =========================
 # Final Response Agent
+# Phase 5: Compact context — no raw evidence_context; specialist summaries + provider status block
+# Phase 4: Generation model with final_synthesis token budget
 # =========================
+def _build_provider_status_block(state: TravelState) -> str:
+    """Compact, grounding-preserving provider status block for final_agent prompt."""
+    statuses = state.get("specialist_statuses", {})
+    lines = []
+
+    if statuses.get("flight_agent") not in (None, "NOT_SELECTED"):
+        avail = "AVAILABLE" if state.get("flight_data_available") else "DEGRADED — data not retrieved"
+        lines.append(f"- Flights: {avail} [PROVIDER_DATA · REFERENCE — verify schedules/fares before booking]")
+
+    if statuses.get("hotel_agent") not in (None, "NOT_SELECTED"):
+        avail = "AVAILABLE" if state.get("hotel_data_available") else "DEGRADED — data not retrieved"
+        lines.append(f"- Hotels: {avail} [WEB_SOURCE — web search results, not locked booking rates]")
+
+    if statuses.get("weather_agent") not in (None, "NOT_SELECTED"):
+        avail = "AVAILABLE" if state.get("weather_data_available") else "DEGRADED — data not retrieved"
+        lines.append(f"- Weather: {avail} [PROVIDER_DATA · LIVE/FORECAST]")
+
+    if statuses.get("budget_agent") not in (None, "NOT_SELECTED"):
+        budget_status = statuses.get("budget_agent", "COMPLETED")
+        lines.append(f"- Budget: {budget_status} [MODEL_ESTIMATE — verify all price ranges]")
+
+    return "\n".join(lines) if lines else "No specialist provider data retrieved."
+
+
+_FINAL_SYSTEM = (
+    "You are a professional AI travel research assistant.\n\n"
+    "CRITICAL GROUNDEDNESS & TRUTHFULNESS RULES:\n"
+    "- When presenting flight options, describe them as 'Flight Route Reference' "
+    "(Provider data · Reference — verify current schedule before booking). "
+    "Never describe route reference data as confirmed flights or live bookings.\n"
+    "- When presenting the approved itinerary, label the section 'Approved Day-by-Day Itinerary' "
+    "or 'Day-by-Day Itinerary' — NEVER 'Confirmed Schedule' or 'Confirmed Itinerary' "
+    "since reservations are not made.\n"
+    "- If flight data is unavailable or degraded, state: 'Live flight information was unavailable for this run. Verify schedules and fares with an airline or booking provider before booking.'\n"
+    "- All estimated price ranges must be explicitly marked '[MODEL ESTIMATE - Not Live Fare]'.\n"
+    "- Format the final answer beautifully with markdown sections suited to the query.\n"
+    "Be clear, realistic, and practical."
+)
+
+
 async def final_agent(state: TravelState):
-    iteration = state.get("review_iteration", 0)
     is_specialist_only = "itinerary_agent" not in state.get("selected_agents", [])
-    evidence_context = format_grounded_evidence_context(state.get("evidence_store", {}))
+    llm_token_usage = dict(state.get("llm_token_usage", {}))
 
     if is_specialist_only:
         review_instruction = (
@@ -820,38 +993,40 @@ async def final_agent(state: TravelState):
             f"{state.get('human_feedback', '') or 'Improve the draft before finalizing it.'}"
         )
 
+    provider_status = _build_provider_status_block(state)
+
+    # Phase 5: compact context — specialist summaries already distill the evidence_context.
+    # Sending raw evidence_context on top of them repeats the same provider facts.
+    # Provenance labels (PROVIDER_DATA, WEB_SOURCE, MODEL_ESTIMATE) are preserved via
+    # provider_status block and grounding rules in the specialist summaries themselves.
     final_prompt = (
-        "Generate the final travel response for the user.\n\n"
-        f"Context / Instructions:\n{review_instruction}\n\n"
-        f"User Request:\n{state['user_query']}\n\n"
-        f"Supervisor Constraints:\n{state.get('trip_constraints', {})}\n\n"
-        f"Grounded Evidence & Provenance:\n{evidence_context}\n\n"
-        f"Flight Summary:\n{state.get('flight_results', '')}\n\n"
-        f"Hotel Summary:\n{state.get('hotel_results', '')}\n\n"
-        f"Weather Summary:\n{state.get('weather_results', '')}\n\n"
-        f"Budget Analysis:\n{state.get('budget_results', '')}\n\n"
-        f"Draft Itinerary:\n{state.get('itinerary', '')}\n\n"
-        "CRITICAL GROUNDEDNESS & TRUTHFULNESS RULES:\n"
-        "- When presenting flight options, describe them as 'Flight Route Reference' (Provider data · Reference — verify current schedule before booking). Never describe route reference data as confirmed flights or live bookings.\n"
-        "- When presenting the approved itinerary, label the section 'Approved Day-by-Day Itinerary' or 'Day-by-Day Itinerary' — NEVER 'Confirmed Schedule' or 'Confirmed Itinerary' since reservations are not made.\n"
-        "- If flight data is unavailable or degraded, state: 'Live flight information was unavailable for this run. Verify schedules and fares with an airline or booking provider before booking.'\n"
-        "- All estimated price ranges must be explicitly marked '[MODEL ESTIMATE - Not Live Fare]'.\n"
-        "- Format the final answer beautifully with markdown sections suited to the query.\n"
-        "Be clear, realistic, and practical."
+        f"## Instructions\n{review_instruction}\n\n"
+        f"## User Request\n{state['user_query']}\n\n"
+        f"## Trip Constraints\n{state.get('trip_constraints', {})}\n\n"
+        f"## Provider Status\n{provider_status}\n\n"
+        f"## Flight Summary\n{state.get('flight_results', '') or '(not retrieved)'}\n\n"
+        f"## Hotel Summary\n{state.get('hotel_results', '') or '(not retrieved)'}\n\n"
+        f"## Weather Summary\n{state.get('weather_results', '') or '(not retrieved)'}\n\n"
+        f"## Budget Analysis\n{state.get('budget_results', '') or '(not retrieved)'}\n\n"
+        f"## Draft Itinerary\n{state.get('itinerary', '') or '(none)'}"
     )
 
     try:
-        async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS["llm"]):
-            response = await llm.ainvoke(
-                [
-                    SystemMessage(content="You are a professional AI travel research assistant."),
-                    HumanMessage(content=final_prompt),
-                ]
-            )
+        response, tokens = await invoke_llm(
+            _llm_final,
+            [
+                SystemMessage(content=_FINAL_SYSTEM),
+                HumanMessage(content=final_prompt),
+            ],
+            task_name="final_synthesis",
+        )
+        llm_token_usage = merge_token_usage(llm_token_usage, tokens)
         return {
             "final_response": response.content,
             "messages": [response],
             "llm_calls": _incr_llm(state),
+            "llm_token_usage": llm_token_usage,
+            "run_status": RunStatus.COMPLETED.value,
         }
     except Exception as exc:
         print(f"[final_agent] LLM call failed: {exc}", flush=True)
@@ -859,6 +1034,8 @@ async def final_agent(state: TravelState):
             "final_response": "The final travel plan could not be generated. Please try again.",
             "messages": [AIMessage(content="Final plan generation failed.")],
             "llm_calls": state.get("llm_calls", 0),
+            "llm_token_usage": llm_token_usage,
+            "run_status": RunStatus.DEGRADED.value,
         }
 
 
@@ -877,6 +1054,7 @@ async def review_limit_reached_agent(state: TravelState):
         "approved": False,
         "review_limit_reached": True,
         "approval_request": "",
+        "run_status": RunStatus.DEGRADED.value,
         "messages": [AIMessage(content=message)],
     }
 
@@ -891,6 +1069,7 @@ ROUTE_MAP = {
     "weather_agent": "weather_agent",
     "budget_agent": "budget_agent",
     "itinerary_agent": "itinerary_agent",
+    "itinerary_degraded": "itinerary_degraded",
     "final_agent": "final_agent",
 }
 
@@ -918,6 +1097,23 @@ def route_after_agent(current_agent: str):
             return "itinerary_agent"
         return "final_agent"
     return route
+
+
+def route_after_itinerary(state: TravelState) -> str:
+    """
+    Phase 6: Route itinerary_agent (and itinerary_revision) output.
+    DEGRADED or missing itinerary → itinerary_degraded (no human_review gate).
+    Valid itinerary → human_review as normal.
+    """
+    statuses = state.get("specialist_statuses", {})
+    itinerary = (state.get("itinerary") or "").strip()
+    if (
+        statuses.get("itinerary_agent") == "DEGRADED"
+        or not itinerary
+        or itinerary == _ITINERARY_FAILURE_SENTINEL
+    ):
+        return "itinerary_degraded"
+    return "human_review"
 
 
 def route_after_review(state: TravelState) -> str:
@@ -952,6 +1148,7 @@ def build_travel_graph(checkpointer=None):
     g.add_node("budget_agent", budget_agent)
     g.add_node("itinerary_agent", itinerary_agent)
     g.add_node("itinerary_revision", itinerary_revision_agent)
+    g.add_node("itinerary_degraded", itinerary_degraded_agent)  # Phase 6
     g.add_node("human_review", human_review_node)
     g.add_node("final_agent", final_agent)
     g.add_node("review_limit_reached", review_limit_reached_agent)
@@ -963,8 +1160,19 @@ def build_travel_graph(checkpointer=None):
     g.add_conditional_edges("weather_agent", route_after_agent("weather_agent"), ROUTE_MAP)
     g.add_conditional_edges("budget_agent", route_after_agent("budget_agent"), ROUTE_MAP)
 
-    g.add_edge("itinerary_agent", "human_review")
-    g.add_edge("itinerary_revision", "human_review")
+    # Phase 6: itinerary_agent routes conditionally — DEGRADED bypasses human_review
+    g.add_conditional_edges(
+        "itinerary_agent",
+        route_after_itinerary,
+        {"human_review": "human_review", "itinerary_degraded": "itinerary_degraded"},
+    )
+    # Phase 6: revision failures also bypass human_review
+    g.add_conditional_edges(
+        "itinerary_revision",
+        route_after_itinerary,
+        {"human_review": "human_review", "itinerary_degraded": "itinerary_degraded"},
+    )
+
     g.add_conditional_edges(
         "human_review",
         route_after_review,
@@ -977,6 +1185,7 @@ def build_travel_graph(checkpointer=None):
     g.add_edge("final_agent", END)
     g.add_edge("guardrail_blocked", END)
     g.add_edge("review_limit_reached", END)
+    g.add_edge("itinerary_degraded", END)  # Phase 6
 
     return g.compile(checkpointer=checkpointer)
 
@@ -1017,6 +1226,8 @@ class TravelAgentService:
                 "evidence_store": {},
                 "capability_trace": [],
                 "llm_calls": 0,
+                "llm_token_usage": {},
+                "run_status": RunStatus.COMPLETED.value,
             },
             config=config,
         )
@@ -1071,8 +1282,16 @@ def _serialize_result(result: dict[str, Any], thread_id: str) -> dict[str, Any]:
     answer = result.get("final_response") or last_message
     interrupt_payload = _interrupt_payload(result)
 
+    requires_approval = False
     if interrupt_payload:
-        answer = interrupt_payload.get("draft_itinerary") or result.get("itinerary", "")
+        itinerary_in_interrupt = interrupt_payload.get("draft_itinerary") or result.get("itinerary", "")
+        # Phase 6: never present approval gate for a missing/failed itinerary
+        if itinerary_in_interrupt and itinerary_in_interrupt.strip() != _ITINERARY_FAILURE_SENTINEL:
+            requires_approval = True
+            answer = itinerary_in_interrupt
+        else:
+            # Interrupt with degraded itinerary — treat as degraded, no approval
+            answer = result.get("final_response") or last_message
 
     # Safe public capability trace
     raw_trace = result.get("capability_trace", [])
@@ -1092,10 +1311,10 @@ def _serialize_result(result: dict[str, Any], thread_id: str) -> dict[str, Any]:
     return {
         "thread_id": thread_id,
         "answer": answer,
-        "requires_approval": interrupt_payload is not None,
+        "requires_approval": requires_approval,
         "approval_request": (
             interrupt_payload.get("approval_request", "")
-            if interrupt_payload
+            if requires_approval and interrupt_payload
             else result.get("approval_request", "")
         ),
         "flight_results": result.get("flight_results", ""),
@@ -1104,7 +1323,7 @@ def _serialize_result(result: dict[str, Any], thread_id: str) -> dict[str, Any]:
         "budget_results": result.get("budget_results", ""),
         "itinerary": (
             interrupt_payload.get("draft_itinerary", "")
-            if interrupt_payload
+            if requires_approval and interrupt_payload
             else result.get("itinerary", "")
         ),
         "selected_agents": result.get("selected_agents", []),
@@ -1119,6 +1338,8 @@ def _serialize_result(result: dict[str, Any], thread_id: str) -> dict[str, Any]:
         "review_limit_reached": result.get("review_limit_reached", False),
         "capability_trace": safe_trace,
         "llm_calls": result.get("llm_calls", 0),
+        "llm_token_usage": result.get("llm_token_usage", {}),  # Phase 8: internal trace
+        "run_status": result.get("run_status", RunStatus.COMPLETED.value),
     }
 
 

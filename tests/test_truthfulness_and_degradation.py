@@ -16,6 +16,7 @@ class TruthfulnessAndDegradationTest(unittest.TestCase):
             "selected_agents": ["flight_agent", "itinerary_agent"],
             "specialist_statuses": {"flight_agent": "SELECTED", "itinerary_agent": "SELECTED"},
             "llm_calls": 0,
+            "llm_token_usage": {},
         }
 
         # Mock aviation_mcp_call to simulate a tool/uvx failure
@@ -41,6 +42,7 @@ class TruthfulnessAndDegradationTest(unittest.TestCase):
             "selected_agents": ["flight_agent", "itinerary_agent"],
             "specialist_statuses": {"flight_agent": "SELECTED", "itinerary_agent": "SELECTED"},
             "llm_calls": 0,
+            "llm_token_usage": {},
         }
 
         mock_llm = MagicMock()
@@ -51,12 +53,13 @@ class TruthfulnessAndDegradationTest(unittest.TestCase):
             return ["HND", "NRT"]
 
         with patch("backend.aviation_mcp_call", side_effect=_mock_aviation), \
-             patch("backend.llm", mock_llm):
+             patch("backend._llm_flight", mock_llm):
             result = asyncio.run(backend.flight_agent(state))
 
         self.assertEqual(result["specialist_statuses"]["flight_agent"], "COMPLETED")
         self.assertTrue(result["flight_data_available"])
         self.assertIn("ANA and JAL", result["flight_results"])
+
 
     def test_supervisor_marks_unselected_agents_as_not_selected(self):
         state = {"user_query": "What is the weather in Paris?", "llm_calls": 0}

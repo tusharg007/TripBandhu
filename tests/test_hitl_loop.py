@@ -76,10 +76,11 @@ class HITLLoopTest(unittest.TestCase):
         """itinerary_revision_agent increments review_iteration."""
         import backend
         state = self._base_state(iteration=0, feedback="Add a museum visit.")
+        state["llm_token_usage"] = {}
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Revised: Day 1 museum..."))
 
-        with patch.object(backend, 'llm', mock_llm):
+        with patch.object(backend, '_llm_revision', mock_llm):
             result = asyncio.run(backend.itinerary_revision_agent(state))
 
         self.assertEqual(result["review_iteration"], 1)
@@ -99,6 +100,57 @@ class HITLLoopTest(unittest.TestCase):
         self.assertFalse(entries[0]["approved"])
         self.assertFalse(entries[1]["approved"])
         self.assertTrue(entries[2]["approved"])
+
+
+class DegradedItineraryRoutingTest(unittest.TestCase):
+    """Phase 6: Itinerary DEGRADED must never enter human_review."""
+
+    def test_degraded_itinerary_routes_to_itinerary_degraded_not_human_review(self):
+        """MANDATORY: When itinerary_agent sets DEGRADED, route_after_itinerary returns 'itinerary_degraded'."""
+        import backend
+        state = {
+            "specialist_statuses": {"itinerary_agent": "DEGRADED"},
+            "itinerary": backend._ITINERARY_FAILURE_SENTINEL,
+        }
+        dest = backend.route_after_itinerary(state)
+        self.assertEqual(dest, "itinerary_degraded",
+                         "DEGRADED itinerary must never enter human_review")
+
+    def test_valid_itinerary_routes_to_human_review(self):
+        """Valid itinerary with COMPLETED status routes to human_review as normal."""
+        import backend
+        state = {
+            "specialist_statuses": {"itinerary_agent": "COMPLETED"},
+            "itinerary": "Day 1: Arrive in Tokyo. Day 2: Visit Shinjuku...",
+        }
+        dest = backend.route_after_itinerary(state)
+        self.assertEqual(dest, "human_review")
+
+    def test_empty_itinerary_routes_to_degraded(self):
+        """Empty itinerary string (any status) also routes to itinerary_degraded."""
+        import backend
+        state = {
+            "specialist_statuses": {"itinerary_agent": "COMPLETED"},
+            "itinerary": "",
+        }
+        dest = backend.route_after_itinerary(state)
+        self.assertEqual(dest, "itinerary_degraded")
+
+    def test_itinerary_degraded_agent_sets_correct_fields(self):
+        """itinerary_degraded_agent must set requires_approval=False semantics in state."""
+        import backend
+        state = {
+            "specialist_statuses": {"itinerary_agent": "DEGRADED"},
+            "itinerary": backend._ITINERARY_FAILURE_SENTINEL,
+        }
+        result = asyncio.run(backend.itinerary_degraded_agent(state))
+        self.assertEqual(result["approval_request"], "",
+                         "Degraded itinerary must have empty approval_request")
+        self.assertIn("could not be generated", result["final_response"])
+        self.assertEqual(result["specialist_statuses"]["itinerary_agent"], "DEGRADED")
+        from schemas import RunStatus
+        self.assertEqual(result["run_status"], RunStatus.DEGRADED.value)
+
 
 
 class HITLApiValidationTest(unittest.TestCase):

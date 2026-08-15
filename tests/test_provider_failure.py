@@ -140,13 +140,14 @@ class FlightAgentDegradationTest(unittest.TestCase):
             "human_feedback": "",
             "review_iteration": 0,
             "llm_calls": 4,
+            "llm_token_usage": {},
         }
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(
             return_value=AIMessage(content="Live flight information was unavailable for this run. Verify schedules and fares with an airline or booking provider before booking. Hotels: APA Hotel...")
         )
 
-        with patch.object(backend, 'llm', mock_llm):
+        with patch.object(backend, '_llm_final', mock_llm):
             result = asyncio.run(backend.final_agent(state))
 
         # Must not contain fabricated prices

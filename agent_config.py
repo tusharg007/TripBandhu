@@ -1,40 +1,75 @@
 """
-agent_config.py  TF1 centralized configuration for timeouts and retry settings.
+agent_config.py — Centralized configuration for TripBandhu.
 
-All timeout values, retry limits, and review caps are defined here.
-No magic numbers should be scattered across specialist or provider code.
+Covers: provider timeouts, retry settings, HITL caps, model IDs, token budgets,
+reasoning parameters, and LLM rate-limit handling thresholds.
+
+No magic numbers should be scattered across agent or provider code.
+All tuneable knobs live here and are env-overridable where appropriate.
 """
+
+import os
+
+# ---------------------------------------------------------------------------
+# Model IDs (env-configurable; defaults = confirmed Groq free-tier IDs)
+# ---------------------------------------------------------------------------
+# GROQ_CONTROL_MODEL: lighter model used for routing/classification tasks.
+# GROQ_GENERATION_MODEL: larger model used for content synthesis tasks.
+#
+# Set in environment (or .env) to override at runtime without code changes.
+GROQ_CONTROL_MODEL: str = os.getenv("GROQ_CONTROL_MODEL", "openai/gpt-oss-20b")
+GROQ_GENERATION_MODEL: str = os.getenv("GROQ_GENERATION_MODEL", "openai/gpt-oss-120b")
+
+# GPT-OSS reasoning settings — low effort, chain-of-thought hidden from output.
+# Reduces token consumption while keeping routing and synthesis quality acceptable.
+# Raise effort per-task only if evaluations reveal quality regressions.
+LLM_REASONING_EFFORT: str = os.getenv("LLM_REASONING_EFFORT", "low")
+LLM_REASONING_FORMAT: str = os.getenv("LLM_REASONING_FORMAT", "hidden")
+
+# ---------------------------------------------------------------------------
+# Per-task output token budgets
+# ---------------------------------------------------------------------------
+# Values are conservative: observed outputs + ~25% safety margin.
+# Guardrail/supervisor use the control model; others use the generation model.
+# Do NOT lower these below observed real output lengths.
+MAX_TOKENS_BY_TASK: dict[str, int] = {
+    "guardrail":            350,
+    "supervisor":           600,
+    "flight_summary":       900,
+    "budget":               900,
+    "itinerary":           2000,
+    "revision":            2000,
+    "final_synthesis":     2200,
+    "destination_extract":   64,   # Control model: destination name only
+}
 
 # ---------------------------------------------------------------------------
 # Provider timeouts (seconds)
 # ---------------------------------------------------------------------------
 # Each external provider call is wrapped in asyncio.timeout() using these values.
-# Adjust per environment; these defaults are conservative for a hosted LLM/MCP stack.
-
 PROVIDER_TIMEOUT_SECONDS: dict[str, float] = {
-    "aviation": 15.0,   # AviationStack MCP (subprocess stdio)
-    "tavily": 12.0,     # Tavily HTTP search
-    "weather": 10.0,    # Custom weather MCP server (subprocess stdio)
-    "llm": 30.0,        # Groq LLM API calls
-    "llm_structured": 30.0,  # Structured output LLM calls
+    "aviation": 15.0,          # AviationStack MCP (subprocess stdio)
+    "tavily":   12.0,          # Tavily HTTP search
+    "weather":  10.0,          # Custom weather MCP server (subprocess stdio)
+    "llm":      45.0,          # Generation model (120B) — may be slower than 70B
+    "llm_structured": 30.0,    # Control model structured outputs
 }
 
+# ---------------------------------------------------------------------------
+# Retry settings (MCP providers via provider_utils)
+# ---------------------------------------------------------------------------
+RETRY_MAX_ATTEMPTS: int = 2          # 1 initial + 1 retry
+RETRY_BASE_DELAY_SECONDS: float = 0.5
 
 # ---------------------------------------------------------------------------
-# Retry settings
+# LLM rate-limit thresholds (centralized LLM invocation via llm_utils)
 # ---------------------------------------------------------------------------
-# Applies only to RETRYABLE error codes (TIMEOUT, RATE_LIMITED, UNAVAILABLE).
-# Authentication, configuration, and parser errors are NEVER retried.
-
-RETRY_MAX_ATTEMPTS: int = 2          # Total attempts (1 initial + 1 retry)
-RETRY_BASE_DELAY_SECONDS: float = 0.5  # Fixed delay between retries (no exponential backoff needed)
-
+# If Retry-After <= SHORT_WAIT_MAX: attempt one bounded retry.
+# If Retry-After > SHORT_WAIT_MAX: degrade immediately (do not hold the user open).
+RATE_LIMIT_SHORT_WAIT_MAX_SECONDS: int = 15
+RATE_LIMIT_DEFAULT_RETRY_WAIT_SECONDS: float = 2.0   # When Retry-After header absent
 
 # ---------------------------------------------------------------------------
 # HITL review loop
 # ---------------------------------------------------------------------------
-# Generous cap to prevent accidental infinite graph execution if the review
-# node is reached without a human interrupt in test/mock environments.
-# The system NEVER silently auto-approves when the cap is hit.
-
 MAX_REVIEW_ITERATIONS: int = 10

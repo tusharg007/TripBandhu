@@ -156,6 +156,7 @@ class ErrorCode(str, Enum):
 
     TIMEOUT = "TIMEOUT"
     RATE_LIMITED = "RATE_LIMITED"
+    RATE_LIMITED_LONG_WAIT = "RATE_LIMITED_LONG_WAIT"  # Long Retry-After; degrade immediately
     UNAVAILABLE = "UNAVAILABLE"
     INVALID_RESPONSE = "INVALID_RESPONSE"
     AUTH_CONFIGURATION = "AUTH_CONFIGURATION"
@@ -163,9 +164,18 @@ class ErrorCode(str, Enum):
     INTERNAL = "INTERNAL"
 
 
+# RATE_LIMITED_LONG_WAIT is intentionally excluded: never retry on long-wait quota exhaustion.
 RETRYABLE_ERROR_CODES: frozenset[ErrorCode] = frozenset(
     {ErrorCode.TIMEOUT, ErrorCode.RATE_LIMITED, ErrorCode.UNAVAILABLE}
 )
+
+
+class RunStatus(str, Enum):
+    """High-level outcome of a travel planning run."""
+
+    COMPLETED = "COMPLETED"   # Full plan produced (or specialist-only answer)
+    DEGRADED = "DEGRADED"     # Partial result; a required step failed
+    BLOCKED = "BLOCKED"       # Request blocked by guardrail
 
 
 class EvidenceKind(str, Enum):

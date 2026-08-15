@@ -51,7 +51,10 @@ class HITLMultiTurnE2ETest(unittest.TestCase):
         with patch.object(backend, '_llm_guardrail') as mg, \
              patch.object(backend, '_llm_supervisor') as ms, \
              patch.object(backend, 'aviation_mcp_call', side_effect=_mock_aviation), \
-             patch.object(backend, 'llm', mock_llm):
+             patch.object(backend, '_llm_flight', mock_llm), \
+             patch.object(backend, '_llm_itinerary', mock_llm), \
+             patch.object(backend, '_llm_revision', mock_llm), \
+             patch.object(backend, '_llm_final', mock_llm):
 
             mg.ainvoke = AsyncMock(return_value=allowed)
             ms.ainvoke = AsyncMock(return_value=supervisor_decision)
@@ -98,7 +101,9 @@ class HITLMultiTurnE2ETest(unittest.TestCase):
 
         with patch.object(backend, '_llm_guardrail') as mg, \
              patch.object(backend, '_llm_supervisor') as ms, \
-             patch.object(backend, 'llm', mock_llm):
+             patch.object(backend, '_llm_itinerary', mock_llm), \
+             patch.object(backend, '_llm_revision', mock_llm), \
+             patch.object(backend, '_llm_final', mock_llm):
 
             mg.ainvoke = AsyncMock(return_value=allowed)
             ms.ainvoke = AsyncMock(return_value=supervisor_decision)

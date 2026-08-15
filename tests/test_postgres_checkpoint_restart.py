@@ -87,7 +87,11 @@ async def execute_postgres_checkpoint_restart_flow(db_url: str) -> bool:
          patch.object(backend, "weather_mcp_search", side_effect=_mock_weather), \
          patch.object(backend, "forecast_mcp_search", side_effect=_mock_forecast), \
          patch.object(backend, "extract_destination_async", side_effect=_mock_extract), \
-         patch.object(backend, "llm", mock_llm):
+         patch.object(backend, "_llm_budget", mock_llm), \
+         patch.object(backend, "_llm_flight", mock_llm), \
+         patch.object(backend, "_llm_itinerary", mock_llm), \
+         patch.object(backend, "_llm_revision", mock_llm), \
+         patch.object(backend, "_llm_final", mock_llm):
 
         mg.ainvoke = AsyncMock(return_value=allowed)
         ms.ainvoke = AsyncMock(return_value=supervisor_decision)

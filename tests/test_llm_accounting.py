@@ -1,5 +1,5 @@
 
-"""TF1: Precise LLM call accounting tests."""
+"""TF1: Precise LLM call accounting tests — updated for Phase 1+3 LLM migration."""
 import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,6 +17,7 @@ class LLMAccountingTest(unittest.TestCase):
             "user_query": "Find hotels in Kyoto",
             "specialist_statuses": {},
             "llm_calls": 5,
+            "llm_token_usage": {},
         }
 
         async def _mock_tavily(query):
@@ -34,6 +35,7 @@ class LLMAccountingTest(unittest.TestCase):
             "user_query": "Flights from Delhi to Tokyo",
             "specialist_statuses": {},
             "llm_calls": 2,
+            "llm_token_usage": {},
         }
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="ANA and JAL fly this route"))
@@ -42,7 +44,7 @@ class LLMAccountingTest(unittest.TestCase):
             return ["HND", "NRT"] if tool_name == "list_airports" else ["ANA", "JAL"]
 
         with patch.object(backend, 'aviation_mcp_call', side_effect=_mock_aviation), \
-             patch.object(backend, 'llm', mock_llm):
+             patch.object(backend, '_llm_flight', mock_llm):
             result = asyncio.run(backend.flight_agent(state))
 
         self.assertEqual(result["llm_calls"], 3)
@@ -54,6 +56,7 @@ class LLMAccountingTest(unittest.TestCase):
             "user_query": "Flights from Delhi to Tokyo",
             "specialist_statuses": {},
             "llm_calls": 2,
+            "llm_token_usage": {},
         }
 
         async def _fail_aviation(tool_name):
@@ -75,11 +78,12 @@ class LLMAccountingTest(unittest.TestCase):
             "hotel_results": "",
             "weather_results": "",
             "llm_calls": 3,
+            "llm_token_usage": {},
         }
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Budget feasible"))
 
-        with patch.object(backend, 'llm', mock_llm):
+        with patch.object(backend, '_llm_budget', mock_llm):
             result = asyncio.run(backend.budget_agent(state))
 
         self.assertEqual(result["llm_calls"], 4)
@@ -96,11 +100,12 @@ class LLMAccountingTest(unittest.TestCase):
             "weather_results": "",
             "budget_results": "",
             "llm_calls": 4,
+            "llm_token_usage": {},
         }
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Day 1: Arrive in Tokyo"))
 
-        with patch.object(backend, 'llm', mock_llm):
+        with patch.object(backend, '_llm_itinerary', mock_llm):
             result = asyncio.run(backend.itinerary_agent(state))
 
         self.assertEqual(result["llm_calls"], 5)
@@ -120,11 +125,12 @@ class LLMAccountingTest(unittest.TestCase):
             "human_feedback": "Add more museums",
             "review_iteration": 0,
             "llm_calls": 5,
+            "llm_token_usage": {},
         }
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Revised Day 1: Museum"))
 
-        with patch.object(backend, 'llm', mock_llm):
+        with patch.object(backend, '_llm_revision', mock_llm):
             result = asyncio.run(backend.itinerary_revision_agent(state))
 
         self.assertEqual(result["llm_calls"], 6)
@@ -145,23 +151,60 @@ class LLMAccountingTest(unittest.TestCase):
             "human_feedback": "",
             "review_iteration": 0,
             "llm_calls": 6,
+            "llm_token_usage": {},
         }
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Polished final plan"))
 
-        with patch.object(backend, 'llm', mock_llm):
+        with patch.object(backend, '_llm_final', mock_llm):
             result = asyncio.run(backend.final_agent(state))
 
         self.assertEqual(result["llm_calls"], 7)
 
-    def test_weather_agent_counts_destination_extraction(self):
-        """weather_agent calls extract_destination_async (LLM) — must count it."""
+    def test_weather_agent_does_not_count_llm_when_destination_available(self):
+        """
+        Phase 3: weather_agent must NOT call extract_destination_async (no LLM call)
+        when supervisor has already populated trip_constraints.destination.
+        llm_calls must remain unchanged.
+        """
         import backend
         state = {
             "user_query": "Weather in Kyoto next week",
             "specialist_statuses": {},
-            "trip_constraints": {"destination": "Kyoto"},
+            "trip_constraints": {"destination": "Kyoto"},  # already extracted by supervisor
             "llm_calls": 2,
+            "llm_token_usage": {},
+        }
+
+        async def _mock_weather(city):
+            return "Sunny 25C"
+
+        async def _mock_forecast(city):
+            return "Clear skies for a week"
+
+        with patch.object(backend, 'extract_destination_async',
+                          side_effect=AssertionError("extract_destination_async must NOT be called when destination is in constraints")), \
+             patch.object(backend, 'weather_mcp_search', side_effect=_mock_weather), \
+             patch.object(backend, 'forecast_mcp_search', side_effect=_mock_forecast):
+            result = asyncio.run(backend.weather_agent(state))
+
+        # llm_calls must NOT be incremented (no LLM call for extraction)
+        self.assertEqual(result["llm_calls"], 2,
+                         "weather_agent must not increment llm_calls when destination is already in trip_constraints")
+
+    def test_weather_agent_counts_llm_when_destination_absent(self):
+        """
+        Phase 3: weather_agent SHOULD call extract_destination_async (LLM call)
+        when trip_constraints.destination is absent/empty.
+        llm_calls must be incremented by 1.
+        """
+        import backend
+        state = {
+            "user_query": "What is the weather like in Kyoto?",
+            "specialist_statuses": {},
+            "trip_constraints": {},   # empty — no supervisor destination
+            "llm_calls": 2,
+            "llm_token_usage": {},
         }
 
         async def _mock_extract(query):
@@ -173,17 +216,25 @@ class LLMAccountingTest(unittest.TestCase):
         async def _mock_forecast(city):
             return "Clear skies for a week"
 
-        with patch.object(backend, 'extract_destination_async', side_effect=_mock_extract), \
+        extract_called = []
+
+        async def _tracking_extract(query):
+            extract_called.append(True)
+            return "Kyoto"
+
+        with patch.object(backend, 'extract_destination_async', side_effect=_tracking_extract), \
              patch.object(backend, 'weather_mcp_search', side_effect=_mock_weather), \
              patch.object(backend, 'forecast_mcp_search', side_effect=_mock_forecast):
             result = asyncio.run(backend.weather_agent(state))
 
-        self.assertEqual(result["llm_calls"], 3)
+        self.assertTrue(extract_called, "extract_destination_async should be called when destination is absent")
+        self.assertEqual(result["llm_calls"], 3,
+                         "weather_agent must increment llm_calls when LLM destination extraction is performed")
 
     def test_supervisor_guardrail_counts_both_llm_invocations(self):
         """supervisor_agent counts 1 for guardrail LLM and 1 for supervisor LLM (total +2)."""
         import backend
-        state = {"user_query": "Plan a 7-day trip to Tokyo", "llm_calls": 0}
+        state = {"user_query": "Plan a 7-day trip to Tokyo", "llm_calls": 0, "llm_token_usage": {}}
         allowed = GuardrailDecision(allowed=True, reason="travel", category=GuardrailCategory.TRAVEL)
         decision = SupervisorDecision(
             selected_agents=[AgentName.ITINERARY],
@@ -201,7 +252,7 @@ class LLMAccountingTest(unittest.TestCase):
     def test_supervisor_guardrail_fallback_does_not_count_second_guardrail_llm(self):
         """When guardrail LLM fails and uses keyword fallback, it does NOT count a second LLM call."""
         import backend
-        state = {"user_query": "Plan a flight to Tokyo", "llm_calls": 0}
+        state = {"user_query": "Plan a flight to Tokyo", "llm_calls": 0, "llm_token_usage": {}}
         decision = SupervisorDecision(
             selected_agents=[AgentName.FLIGHT],
             constraints=TravelConstraints(destination="Tokyo"),
