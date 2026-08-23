@@ -408,12 +408,21 @@ function downloadPDF() {
     downloadBtn.textContent = "Preparing PDF";
     downloadBtn.disabled = true;
 
+    // scrollY compensates for the element's position in the document —
+    // without it html2canvas captures from y=0 producing blank pages before the content.
+    // scale:1 avoids the browser canvas height limit (32767px) that truncates long PDFs.
     html2pdf()
         .set({
             margin: 0.5,
             filename: "tripbandhu-travel-plan.pdf",
-            image: { type: "jpeg", quality: 0.98 },
-            html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+            image: { type: "jpeg", quality: 0.92 },
+            html2canvas: {
+                scale: 1,
+                useCORS: true,
+                backgroundColor: "#ffffff",
+                scrollY: -window.scrollY,
+                windowWidth: document.documentElement.scrollWidth,
+            },
             jsPDF: { unit: "in", format: "a4", orientation: "portrait" },
             pagebreak: { mode: ["css", "legacy"] },
         })

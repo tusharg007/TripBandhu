@@ -193,9 +193,9 @@ def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int
                 freshness=EvidenceFreshness.REFERENCE,
             )
         )
-        items.append({"title": title, "url": url, "snippet": content[:350]})
+        items.append({"title": title, "url": url, "snippet": content[:600]})
         url_md = f" ([Source]({url}))" if url else ""
-        summary_lines.append(f"- **{title}**{url_md}: {content[:250]}")
+        summary_lines.append(f"- **{title}**{url_md}: {content[:600]}")
 
     formatted_summary = "\n".join(summary_lines) if summary_lines else str(raw_data)[:1000]
 

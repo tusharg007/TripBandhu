@@ -141,8 +141,14 @@ client = MultiServerMCPClient(
             "args": [
                 PINNED_AVIATIONSTACK_VERSION,
             ],
+            # Pass all common env var name variants — the aviationstack-mcp package
+            # uses "access_key" in its API calls and may look for any of these names.
             "env": _subprocess_env(
                 AVIATION_STACK_API_KEY=AVIATION_STACK_API_KEY,
+                AVIATION_STACK_ACCESS_KEY=AVIATION_STACK_API_KEY,
+                AVIATIONSTACK_API_KEY=AVIATION_STACK_API_KEY,
+                AVIATIONSTACK_ACCESS_KEY=AVIATION_STACK_API_KEY,
+                PYTHONUNBUFFERED="1",
             ),
         },
 
