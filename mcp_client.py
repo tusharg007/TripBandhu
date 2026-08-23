@@ -138,7 +138,11 @@ client = MultiServerMCPClient(
         "aviationstack": {
             "transport": "stdio",
             "command": UVX_COMMAND,
+            # --with mcp==1.28.1 pins the MCP SDK version in uvx's isolated env.
+            # Without this, uvx resolves a different mcp version that lacks
+            # mcp.server.fastmcp, causing aviationstack-mcp to crash on import.
             "args": [
+                "--with", f"mcp==1.28.1",
                 PINNED_AVIATIONSTACK_VERSION,
             ],
             # Pass all common env var name variants — the aviationstack-mcp package
