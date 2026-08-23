@@ -113,7 +113,9 @@ _llm_budget   = _llm_control.bind(max_tokens=MAX_TOKENS_BY_TASK["budget"])
 _llm_flight   = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["flight_summary"])
 _llm_itinerary = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["itinerary"])
 _llm_revision  = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["revision"])
-_llm_final     = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["final_synthesis"])
+# final_synthesis uses control model (gpt-oss-20b, 12k TPM) because the full
+# prompt (all specialist summaries) exceeds gpt-oss-120b's 8k TPM hard limit.
+_llm_final     = _llm_control.bind(max_tokens=MAX_TOKENS_BY_TASK["final_synthesis"])
 
 
 # =========================
@@ -999,16 +1001,24 @@ async def final_agent(state: TravelState):
     # Sending raw evidence_context on top of them repeats the same provider facts.
     # Provenance labels (PROVIDER_DATA, WEB_SOURCE, MODEL_ESTIMATE) are preserved via
     # provider_status block and grounding rules in the specialist summaries themselves.
+    # Cap verbose sections to keep prompt within gpt-oss-20b TPM limits.
+    # Hotel results from Tavily can be very long after the MCP-unwrap fix.
+    _hotel_summary  = (state.get("hotel_results",   "") or "(not retrieved)")[:1800]
+    _weather_summary = (state.get("weather_results", "") or "(not retrieved)")[:800]
+    _flight_summary  = (state.get("flight_results",  "") or "(not retrieved)")[:800]
+    _budget_summary  = (state.get("budget_results",  "") or "(not retrieved)")[:1000]
+    _itinerary_draft = (state.get("itinerary",        "") or "(none)")[:2500]
+
     final_prompt = (
         f"## Instructions\n{review_instruction}\n\n"
         f"## User Request\n{state['user_query']}\n\n"
         f"## Trip Constraints\n{state.get('trip_constraints', {})}\n\n"
         f"## Provider Status\n{provider_status}\n\n"
-        f"## Flight Summary\n{state.get('flight_results', '') or '(not retrieved)'}\n\n"
-        f"## Hotel Summary\n{state.get('hotel_results', '') or '(not retrieved)'}\n\n"
-        f"## Weather Summary\n{state.get('weather_results', '') or '(not retrieved)'}\n\n"
-        f"## Budget Analysis\n{state.get('budget_results', '') or '(not retrieved)'}\n\n"
-        f"## Draft Itinerary\n{state.get('itinerary', '') or '(none)'}"
+        f"## Flight Summary\n{_flight_summary}\n\n"
+        f"## Hotel Summary\n{_hotel_summary}\n\n"
+        f"## Weather Summary\n{_weather_summary}\n\n"
+        f"## Budget Analysis\n{_budget_summary}\n\n"
+        f"## Draft Itinerary\n{_itinerary_draft}"
     )
 
     try:

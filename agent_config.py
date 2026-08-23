@@ -37,9 +37,9 @@ MAX_TOKENS_BY_TASK: dict[str, int] = {
     "supervisor":           600,
     "flight_summary":       900,
     "budget":               900,
-    "itinerary":           3500,
-    "revision":            3500,
-    "final_synthesis":     4096,
+    "itinerary":           2200,   # gpt-oss-120b: 8k TPM limit; ~5k input + 2200 output fits
+    "revision":            2200,   # same
+    "final_synthesis":     2800,   # gpt-oss-20b: 12k TPM limit; ~5k input + 2800 output fits
     "destination_extract":   64,   # Control model: destination name only
 }
 
