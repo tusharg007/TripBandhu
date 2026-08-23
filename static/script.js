@@ -408,30 +408,41 @@ function downloadPDF() {
     downloadBtn.textContent = "Preparing PDF";
     downloadBtn.disabled = true;
 
-    // scrollY compensates for the element's position in the document —
-    // without it html2canvas captures from y=0 producing blank pages before the content.
-    // scale:1 avoids the browser canvas height limit (32767px) that truncates long PDFs.
+    // Clone the content into an off-screen isolated container so that:
+    // 1. scroll offset = 0 → no blank pages at the start
+    // 2. fixed/absolute website design elements (sidebar, borders) don't bleed into the PDF
+    const clone = pdfContent.cloneNode(true);
+    const offscreen = document.createElement("div");
+    offscreen.style.cssText =
+        "position:absolute;top:0;left:-9999px;" +
+        "width:754px;background:#ffffff;" +
+        "padding:20px;box-sizing:border-box;";
+    offscreen.appendChild(clone);
+    document.body.appendChild(offscreen);
+
     html2pdf()
         .set({
-            margin: 0.5,
+            margin: 10,
             filename: "tripbandhu-travel-plan.pdf",
             image: { type: "jpeg", quality: 0.92 },
             html2canvas: {
                 scale: 1,
                 useCORS: true,
                 backgroundColor: "#ffffff",
-                scrollY: -window.scrollY,
-                windowWidth: document.documentElement.scrollWidth,
+                scrollY: 0,
+                scrollX: 0,
+                windowWidth: 794,
             },
-            jsPDF: { unit: "in", format: "a4", orientation: "portrait" },
+            jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
             pagebreak: { mode: ["css", "legacy"] },
         })
-        .from(pdfContent)
+        .from(clone)
         .save()
         .catch(() => {
             showError("Could not download PDF.");
         })
         .finally(() => {
+            document.body.removeChild(offscreen);
             downloadBtn.textContent = oldText;
             downloadBtn.disabled = false;
         });
