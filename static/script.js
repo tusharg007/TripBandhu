@@ -408,21 +408,15 @@ function downloadPDF() {
     downloadBtn.textContent = "Preparing PDF";
     downloadBtn.disabled = true;
 
-    // Clone the content into an off-screen isolated container so that:
-    // 1. scroll offset = 0 → no blank pages at the start
-    // 2. fixed/absolute website design elements (sidebar, borders) don't bleed into the PDF
-    const clone = pdfContent.cloneNode(true);
-    const offscreen = document.createElement("div");
-    offscreen.style.cssText =
-        "position:absolute;top:0;left:-9999px;" +
-        "width:754px;background:#ffffff;" +
-        "padding:20px;box-sizing:border-box;";
-    offscreen.appendChild(clone);
-    document.body.appendChild(offscreen);
+    // Use onclone to inject print-safe styles into the cloned document:
+    // - strips box-shadow (the brown offset border that bleeds into PDF)
+    // - forces white backgrounds on all elements
+    // Element is rendered at its natural width so no content is cut.
+    const elWidth = pdfContent.offsetWidth;
 
     html2pdf()
         .set({
-            margin: 10,
+            margin: [8, 10, 8, 10],
             filename: "tripbandhu-travel-plan.pdf",
             image: { type: "jpeg", quality: 0.92 },
             html2canvas: {
@@ -431,18 +425,29 @@ function downloadPDF() {
                 backgroundColor: "#ffffff",
                 scrollY: 0,
                 scrollX: 0,
-                windowWidth: 794,
+                windowWidth: elWidth,
+                onclone: (_doc, el) => {
+                    // Strip every box-shadow (the brown 8px offset bar) and set white bg
+                    el.querySelectorAll("*").forEach(node => {
+                        node.style.boxShadow = "none";
+                        node.style.textShadow = "none";
+                        node.style.filter = "none";
+                        node.style.background = node.style.background || "transparent";
+                    });
+                    el.style.background = "#ffffff";
+                    el.style.border = "none";
+                    el.style.width = elWidth + "px";
+                },
             },
             jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
             pagebreak: { mode: ["css", "legacy"] },
         })
-        .from(clone)
+        .from(pdfContent)
         .save()
         .catch(() => {
             showError("Could not download PDF.");
         })
         .finally(() => {
-            document.body.removeChild(offscreen);
             downloadBtn.textContent = oldText;
             downloadBtn.disabled = false;
         });
