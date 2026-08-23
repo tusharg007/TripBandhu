@@ -58,7 +58,7 @@ PROVIDER_TIMEOUT_SECONDS: dict[str, float] = {
 # ---------------------------------------------------------------------------
 # Retry settings (MCP providers via provider_utils)
 # ---------------------------------------------------------------------------
-RETRY_MAX_ATTEMPTS: int = 2          # 1 initial + 1 retry
+RETRY_MAX_ATTEMPTS: int = 1          # Single attempt, no retry
 RETRY_BASE_DELAY_SECONDS: float = 0.5
 
 # ---------------------------------------------------------------------------

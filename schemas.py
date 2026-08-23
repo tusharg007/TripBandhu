@@ -166,7 +166,7 @@ class ErrorCode(str, Enum):
 
 # RATE_LIMITED_LONG_WAIT is intentionally excluded: never retry on long-wait quota exhaustion.
 RETRYABLE_ERROR_CODES: frozenset[ErrorCode] = frozenset(
-    {ErrorCode.TIMEOUT, ErrorCode.RATE_LIMITED, ErrorCode.UNAVAILABLE}
+    {ErrorCode.RATE_LIMITED, ErrorCode.UNAVAILABLE}
 )
 
 
