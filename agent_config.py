@@ -37,9 +37,9 @@ MAX_TOKENS_BY_TASK: dict[str, int] = {
     "supervisor":           600,
     "flight_summary":       900,
     "budget":               900,
-    "itinerary":           2000,
-    "revision":            2000,
-    "final_synthesis":     2200,
+    "itinerary":           3500,
+    "revision":            3500,
+    "final_synthesis":     4096,
     "destination_extract":   64,   # Control model: destination name only
 }
 
@@ -48,9 +48,9 @@ MAX_TOKENS_BY_TASK: dict[str, int] = {
 # ---------------------------------------------------------------------------
 # Each external provider call is wrapped in asyncio.timeout() using these values.
 PROVIDER_TIMEOUT_SECONDS: dict[str, float] = {
-    "aviation": 15.0,          # AviationStack MCP (subprocess stdio)
-    "tavily":   12.0,          # Tavily HTTP search
-    "weather":  10.0,          # Custom weather MCP server (subprocess stdio)
+    "aviation": 45.0,          # AviationStack MCP — uvx cold-start + API call on Render
+    "tavily":   15.0,          # Tavily HTTP search
+    "weather":  25.0,          # Custom weather MCP — must exceed server's internal 20s timeout
     "llm":      45.0,          # Generation model (120B) — may be slower than 70B
     "llm_structured": 30.0,    # Control model structured outputs
 }

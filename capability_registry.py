@@ -132,6 +132,19 @@ def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int
 
     # Handle string, list, or dict raw formats safely
     raw_results = []
+
+    # Unwrap MCP protocol response: [{type: "text", text: "...JSON..."}]
+    if isinstance(raw_data, list) and raw_data and isinstance(raw_data[0], dict) and raw_data[0].get("type") == "text":
+        combined_text = " ".join(item.get("text", "") for item in raw_data if isinstance(item, dict))
+        try:
+            parsed = json.loads(combined_text)
+            if isinstance(parsed, dict):
+                raw_data = parsed  # fall through to dict handler below
+            elif isinstance(parsed, list):
+                raw_data = parsed  # fall through to list handler below
+        except (json.JSONDecodeError, TypeError):
+            raw_data = combined_text  # fall through to string handler
+
     if isinstance(raw_data, dict):
         raw_results = raw_data.get("results", []) or raw_data.get("data", [])
         if not raw_results and "content" in raw_data:
