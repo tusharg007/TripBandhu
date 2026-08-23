@@ -1029,7 +1029,9 @@ async def final_agent(state: TravelState):
             "run_status": RunStatus.COMPLETED.value,
         }
     except Exception as exc:
-        print(f"[final_agent] LLM call failed: {exc}", flush=True)
+        import traceback as _tb
+        print(f"[final_agent] LLM call FAILED ({type(exc).__name__}): {exc}", flush=True)
+        print(_tb.format_exc(), flush=True)
         return {
             "final_response": "The final travel plan could not be generated. Please try again.",
             "messages": [AIMessage(content="Final plan generation failed.")],

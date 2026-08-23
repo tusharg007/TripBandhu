@@ -124,26 +124,32 @@ def validate_specialist_capability(specialist: str, capability_name: str) -> Cap
 # 3. Output Normalizers with Source Provenance
 # ===========================================================================
 
+def _unwrap_mcp(raw: Any) -> Any:
+    """Strip MCP protocol envelope [{type:'text', text:'...JSON...'}] → plain data.
+
+    langchain_mcp_adapters returns tool results wrapped in the MCP content-block
+    format. This helper unwraps that envelope and JSON-parses the inner text so
+    downstream normalizers always receive plain dicts / lists / strings.
+    """
+    if isinstance(raw, list) and raw and isinstance(raw[0], dict) and raw[0].get("type") == "text":
+        combined = " ".join(item.get("text", "") for item in raw if isinstance(item, dict))
+        try:
+            return json.loads(combined)
+        except (json.JSONDecodeError, TypeError):
+            return combined  # fallback: plain string
+    return raw  # already unwrapped — pass through unchanged
+
+
 def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int] = None) -> CapabilityEvidence:
     """Normalize raw Tavily search output into bounded structured evidence with source links."""
     now_iso = datetime.now(timezone.utc).isoformat()
     sources: list[SourceReference] = []
     items: list[dict[str, Any]] = []
 
+    raw_data = _unwrap_mcp(raw_data)  # strip MCP {type, text} envelope if present
+
     # Handle string, list, or dict raw formats safely
     raw_results = []
-
-    # Unwrap MCP protocol response: [{type: "text", text: "...JSON..."}]
-    if isinstance(raw_data, list) and raw_data and isinstance(raw_data[0], dict) and raw_data[0].get("type") == "text":
-        combined_text = " ".join(item.get("text", "") for item in raw_data if isinstance(item, dict))
-        try:
-            parsed = json.loads(combined_text)
-            if isinstance(parsed, dict):
-                raw_data = parsed  # fall through to dict handler below
-            elif isinstance(parsed, list):
-                raw_data = parsed  # fall through to list handler below
-        except (json.JSONDecodeError, TypeError):
-            raw_data = combined_text  # fall through to string handler
 
     if isinstance(raw_data, dict):
         raw_results = raw_data.get("results", []) or raw_data.get("data", [])
@@ -216,6 +222,11 @@ def normalize_weather_results(
 ) -> CapabilityEvidence:
     """Normalize OpenWeather observations and forecast entries into typed evidence."""
     now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Unwrap MCP protocol envelope on both inputs
+    current_data = _unwrap_mcp(current_data)
+    forecast_data = _unwrap_mcp(forecast_data)
+
     sources = [
         SourceReference(
             provider="OpenWeather API",
