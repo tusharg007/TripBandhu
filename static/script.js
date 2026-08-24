@@ -395,57 +395,43 @@ function copyResult() {
 }
 
 function downloadPDF() {
-    const pdfContent = byId("pdfContent");
-
-    if (!latestAnswerMarkdown || !pdfContent) {
+    if (!latestAnswerMarkdown) {
         showError("No final travel plan is available to download.");
         return;
     }
 
     const downloadBtn = byId("downloadBtn");
     const oldText = downloadBtn.textContent;
-
-    downloadBtn.textContent = "Preparing PDF";
+    downloadBtn.textContent = "Preparing PDF…";
     downloadBtn.disabled = true;
 
-    // Use onclone to inject print-safe styles into the cloned document:
-    // - strips box-shadow (the brown offset border that bleeds into PDF)
-    // - forces white backgrounds on all elements
-    // Element is rendered at its natural width so no content is cut.
-    const elWidth = pdfContent.offsetWidth;
+    // Extract a title from the first heading in the markdown, fall back to generic
+    const titleMatch = latestAnswerMarkdown.match(/^#+ (.+)/m);
+    const title = titleMatch ? titleMatch[1].trim() : "TripBandhu Travel Plan";
 
-    html2pdf()
-        .set({
-            margin: [8, 10, 8, 10],
-            filename: "tripbandhu-travel-plan.pdf",
-            image: { type: "jpeg", quality: 0.92 },
-            html2canvas: {
-                scale: 1,
-                useCORS: true,
-                backgroundColor: "#ffffff",
-                scrollY: 0,
-                scrollX: 0,
-                windowWidth: elWidth,
-                onclone: (_doc, el) => {
-                    // Strip every box-shadow (the brown 8px offset bar) and set white bg
-                    el.querySelectorAll("*").forEach(node => {
-                        node.style.boxShadow = "none";
-                        node.style.textShadow = "none";
-                        node.style.filter = "none";
-                        node.style.background = node.style.background || "transparent";
-                    });
-                    el.style.background = "#ffffff";
-                    el.style.border = "none";
-                    el.style.width = elWidth + "px";
-                },
-            },
-            jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-            pagebreak: { mode: ["css", "legacy"] },
+    // POST plain markdown text to the server — reportlab renders a clean A4 PDF.
+    // No html2canvas, no browser rendering, no CSS shadow bleed, no blank pages.
+    fetch("/api/travel/download-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: latestAnswerMarkdown, title }),
+    })
+        .then((res) => {
+            if (!res.ok) throw new Error(`Server returned ${res.status}`);
+            return res.blob();
         })
-        .from(pdfContent)
-        .save()
+        .then((blob) => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "tripbandhu-travel-plan.pdf";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        })
         .catch(() => {
-            showError("Could not download PDF.");
+            showError("Could not download PDF. Please try the Copy button instead.");
         })
         .finally(() => {
             downloadBtn.textContent = oldText;
