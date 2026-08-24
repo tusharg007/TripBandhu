@@ -43,7 +43,7 @@ TF1 hardens the agent execution core of TripBandhu across four primary goals wit
   - Destination extraction (+1)
   - Specialist prompts for flight, budget, itinerary, itinerary_revision, and final response (+1 each on actual invocation)
 - Excluded from `llm_calls`:
-  - Tavily-only searches (`hotel_agent` makes 0 LLM calls)
+  - Tavily retrieval followed by one grounded presentation pass (`hotel_agent` filters irrelevant sources before producing end-user Markdown)
   - MCP subprocess tool calls
   - Deterministic keyword fallbacks (0 LLM calls)
   - Routing and serialization

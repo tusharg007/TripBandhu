@@ -4,6 +4,7 @@ from typing import Any
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from location_utils import normalize_weather_location
 from project_config import PROJECT_ROOT, load_project_env
 
 
@@ -45,25 +46,34 @@ def _request_json(
 
         return response.json()
 
+    except requests.Timeout as exc:
+        raise RuntimeError("The weather provider timed out. Please try again shortly.") from exc
     except requests.RequestException as exc:
-        details = ""
-
-        failed_response = getattr(
-            exc,
-            "response",
-            None,
-        )
-
+        failed_response = getattr(exc, "response", None)
+        status_code = getattr(failed_response, "status_code", None)
+        provider_message = ""
         if failed_response is not None:
-            details = (
-                f" Response: "
-                f"{failed_response.text[:500]}"
-            )
+            try:
+                provider_message = str(failed_response.json().get("message") or "").strip()
+            except (ValueError, AttributeError):
+                provider_message = ""
 
-        raise RuntimeError(
-            f"OpenWeather request failed: "
-            f"{exc}.{details}"
-        ) from exc
+        if status_code == 404:
+            message = "The weather provider could not find that location."
+        elif status_code in {401, 403}:
+            message = "Weather access is not configured correctly."
+        elif status_code == 429:
+            message = "The weather provider is temporarily rate-limited."
+        elif status_code and status_code >= 500:
+            message = "The weather provider is temporarily unavailable."
+        else:
+            message = "The weather provider request failed."
+
+        # Never include the requests exception string: it contains the full request
+        # URL and therefore the OpenWeather API key from the query string.
+        if provider_message and status_code not in {401, 403}:
+            message = f"{message} Provider message: {provider_message}."
+        raise RuntimeError(message) from exc
 
 
 @mcp.tool()
@@ -72,7 +82,7 @@ def get_current_weather(
 ) -> dict[str, Any]:
     """Return the current weather for a city."""
 
-    city = city.strip()
+    city = normalize_weather_location(city)
 
     if not city:
         raise ValueError(
@@ -107,7 +117,7 @@ def get_forecast(
     forecast entries for a city.
     """
 
-    city = city.strip()
+    city = normalize_weather_location(city)
 
     if not city:
         raise ValueError(

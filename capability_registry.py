@@ -8,6 +8,7 @@ output normalizers, and grounding context packagers.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -140,8 +141,61 @@ def _unwrap_mcp(raw: Any) -> Any:
     return raw  # already unwrapped — pass through unchanged
 
 
+_HOTEL_TERMS = frozenset({
+    "hotel", "hotels", "resort", "hostel", "accommodation", "lodging",
+    "guesthouse", "guest house", "homestay", "room", "rooms", "suite",
+    "suites", "inn", "stay", "stays", "neighborhood", "neighbourhood",
+    "booking", "property",
+})
+_HOTEL_NOISE_TERMS = frozenset({
+    "best buy", "dictionary", "definition", "merriam-webster", "cambridge",
+    "google play", "app store", "weatherapi", "openweather", "word of the day",
+})
+
+
+def _clean_web_text(value: Any) -> str:
+    """Reduce scraped-page noise while retaining useful prose."""
+    text = re.sub(r"<[^>]+>", " ", str(value or ""))
+    text = re.sub(r"\{\{[^{}]*\}\}", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _hotel_relevance_score(title: str, url: str, content: str) -> int:
+    haystack = f"{title} {url} {content}".casefold()
+    if any(term in haystack for term in _HOTEL_NOISE_TERMS):
+        return -100
+    return sum(2 if term in title.casefold() else 1 for term in _HOTEL_TERMS if term in haystack)
+
+
+def _number(value: Any, suffix: str = "") -> str:
+    if value is None or value == "":
+        return "Not reported"
+    return f"{value}{suffix}"
+
+
+def _usable_weather_payload(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value) and not value.get("error")
+
+
+def _select_provider_records(value: Any, max_records: int = 30) -> Any:
+    """Select complete provider records without cutting any record's text midway."""
+    unwrapped = _unwrap_mcp(value)
+    if isinstance(unwrapped, list):
+        return unwrapped[:max_records]
+    if isinstance(unwrapped, dict):
+        records = unwrapped.get("data")
+        if isinstance(records, list):
+            selected = dict(unwrapped)
+            selected["data"] = records[:max_records]
+            selected["records_returned"] = len(records)
+            selected["records_selected_for_route_summary"] = min(len(records), max_records)
+            return selected
+    return unwrapped
+
+
 def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int] = None) -> CapabilityEvidence:
-    """Normalize raw Tavily search output into bounded structured evidence with source links."""
+    """Keep hotel-relevant Tavily evidence and discard unrelated search noise."""
     now_iso = datetime.now(timezone.utc).isoformat()
     sources: list[SourceReference] = []
     items: list[dict[str, Any]] = []
@@ -169,19 +223,30 @@ def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int
         except Exception:
             raw_results = [{"title": f"Search: {query}", "url": "", "content": raw_data}]
 
-    # Bound top results to 5-8 items to prevent prompt bloat
-    bounded_results = raw_results[:6]
+    ranked_results: list[tuple[int, int, dict[str, str]]] = []
+    for index, item in enumerate(raw_results):
+        if isinstance(item, dict):
+            title = _clean_web_text(item.get("title") or item.get("name") or "Accommodation result")
+            url = str(item.get("url") or "").strip()
+            content = _clean_web_text(item.get("content") or item.get("snippet") or item.get("body"))
+        else:
+            title = "Accommodation result"
+            url = ""
+            content = _clean_web_text(item)
+
+        score = _hotel_relevance_score(title, url, content)
+        if score > 0:
+            ranked_results.append((score, index, {"title": title, "url": url, "content": content}))
+
+    # Six relevant sources are enough for synthesis; ranking prevents unrelated high-
+    # position results from crowding actual accommodation sources out of the prompt.
+    bounded_results = [entry[2] for entry in sorted(ranked_results, key=lambda value: (-value[0], value[1]))[:6]]
     summary_lines = []
 
     for item in bounded_results:
-        if isinstance(item, dict):
-            title = str(item.get("title") or item.get("name") or "Web Search Result").strip()
-            url = str(item.get("url") or "").strip()
-            content = str(item.get("content") or item.get("snippet") or item.get("body") or "").strip()
-        else:
-            title = f"Web Search Result for {query}"
-            url = ""
-            content = str(item).strip()
+        title = item["title"]
+        url = item["url"]
+        content = item["content"]
 
         sources.append(
             SourceReference(
@@ -193,11 +258,17 @@ def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int
                 freshness=EvidenceFreshness.REFERENCE,
             )
         )
-        items.append({"title": title, "url": url, "snippet": content[:600]})
+        # A snippet is deliberately bounded at the evidence boundary so full scraped
+        # pages never reach an LLM or the browser. This does not limit generated output.
+        snippet = content[:700].rstrip()
+        items.append({"title": title, "url": url, "snippet": snippet})
         url_md = f" ([Source]({url}))" if url else ""
-        summary_lines.append(f"- **{title}**{url_md}: {content[:600]}")
+        summary_lines.append(f"- **{title}**{url_md}: {snippet or 'Accommodation source found; details require verification.'}")
 
-    formatted_summary = "\n".join(summary_lines) if summary_lines else str(raw_data)[:1000]
+    formatted_summary = "\n".join(summary_lines) if summary_lines else (
+        "No reliable hotel-specific sources were found in the search results. "
+        "Try a more specific destination or check a trusted accommodation platform directly."
+    )
 
     return CapabilityEvidence(
         capability="HOTEL_WEB_RESEARCH",
@@ -205,7 +276,7 @@ def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int
         tool_name="tavily_search",
         evidence_kind=EvidenceKind.WEB_SOURCE,
         freshness=EvidenceFreshness.REFERENCE,
-        status=CapabilityHealth.AVAILABLE,
+        status=CapabilityHealth.AVAILABLE if items else CapabilityHealth.DEGRADED,
         retrieved_at=now_iso,
         latency_ms=latency_ms,
         data=items,
@@ -238,15 +309,56 @@ def normalize_weather_results(
         )
     ]
 
+    current_ok = _usable_weather_payload(current_data)
+    forecast_ok = _usable_weather_payload(forecast_data)
+    safe_current = current_data if current_ok else None
+    safe_forecast = forecast_data if forecast_ok else None
     structured_data = {
         "city": city,
-        "current": current_data,
-        "forecast": forecast_data,
+        "current": safe_current,
+        "forecast": safe_forecast,
     }
 
-    curr_str = current_data if isinstance(current_data, str) else json.dumps(current_data, indent=2)
-    fore_str = forecast_data if isinstance(forecast_data, str) else json.dumps(forecast_data, indent=2)
-    summary = f"**Current Weather for {city} (LIVE):**\n{curr_str}\n\n**Forecast (FORECAST):**\n{fore_str}"
+    sections: list[str] = []
+    if current_ok:
+        reported_city = current_data.get("city") or city
+        sections.append(
+            f"## Current weather in {reported_city}\n"
+            f"- **Conditions:** {current_data.get('condition') or 'Not reported'}\n"
+            f"- **Temperature:** {_number(current_data.get('temperature_c'), '°C')}"
+            + (
+                f" (feels like {_number(current_data.get('feels_like_c'), '°C')})"
+                if current_data.get("feels_like_c") is not None else ""
+            )
+            + f"\n- **Humidity:** {_number(current_data.get('humidity'), '%')}"
+            + f"\n- **Wind:** {_number(current_data.get('wind_speed'), ' m/s')}"
+        )
+    else:
+        sections.append(
+            f"## Current weather in {city}\n"
+            "Live conditions are temporarily unavailable. Check a current forecast before departure."
+        )
+
+    forecast_entries = forecast_data.get("forecast", []) if forecast_ok else []
+    if isinstance(forecast_entries, list) and forecast_entries:
+        rows = []
+        for entry in forecast_entries:
+            if not isinstance(entry, dict):
+                continue
+            rows.append(
+                f"- **{entry.get('datetime') or 'Upcoming'}:** "
+                f"{entry.get('condition') or 'Conditions not reported'}, "
+                f"{_number(entry.get('temperature_c', entry.get('temp')), '°C')}"
+            )
+        if rows:
+            sections.append("## Near-term forecast\n" + "\n".join(rows))
+    if not forecast_entries:
+        sections.append(
+            "## Near-term forecast\n"
+            "A provider forecast is temporarily unavailable. Recheck closer to the travel date."
+        )
+
+    summary = "\n\n".join(sections)
 
     return CapabilityEvidence(
         capability="WEATHER_FORECAST",
@@ -254,7 +366,7 @@ def normalize_weather_results(
         tool_name="get_current_weather,get_forecast",
         evidence_kind=EvidenceKind.PROVIDER_DATA,
         freshness=EvidenceFreshness.FORECAST,
-        status=CapabilityHealth.AVAILABLE,
+        status=CapabilityHealth.AVAILABLE if current_ok and forecast_ok else CapabilityHealth.DEGRADED,
         retrieved_at=now_iso,
         latency_ms=latency_ms,
         data=structured_data,
@@ -284,17 +396,22 @@ def normalize_flight_results(
         )
     ]
 
+    selected_routes = _select_provider_records(routes_data)
+    selected_airports = _select_provider_records(airports_data)
+    selected_airlines = _select_provider_records(airlines_data)
     structured_data = {
         "destination": destination,
         "origin": origin,
-        "routes": routes_data,
-        "airports": airports_data,
-        "airlines": airlines_data,
+        "routes": selected_routes,
+        "airports": selected_airports,
+        "airlines": selected_airlines,
     }
 
-    routes_str = str(routes_data)[:800] if routes_data else "No specific routes returned."
-    airports_str = str(airports_data)[:600] if airports_data else ""
-    airlines_str = str(airlines_data)[:600] if airlines_data else ""
+    # Do not character-slice provider evidence: that can cut a flight record halfway
+    # through and subsequently cause a generated specialist answer to stop abruptly.
+    routes_str = json.dumps(selected_routes, ensure_ascii=False, default=str) if routes_data else "No specific routes returned."
+    airports_str = json.dumps(selected_airports, ensure_ascii=False, default=str) if airports_data else "No airport records returned."
+    airlines_str = json.dumps(selected_airlines, ensure_ascii=False, default=str) if airlines_data else "No airline records returned."
 
     summary = (
         f"**Route Information ({origin or 'Origin'} -> {destination}) [REFERENCE]:**\n{routes_str}\n\n"

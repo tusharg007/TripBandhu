@@ -43,7 +43,7 @@ class HITLMultiTurnE2ETest(unittest.TestCase):
             AIMessage(content="Final Approved Plan v2"),        # final_agent
         ])
 
-        async def _mock_aviation(tool_name):
+        async def _mock_aviation(tool_name, tool_args=None):
             return ["HND"]
 
         thread_id = "test_hitl_multi_turn_thread"

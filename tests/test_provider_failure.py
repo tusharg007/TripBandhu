@@ -82,6 +82,38 @@ class AsyncCallProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.safe_message, "Service temporarily unavailable")
 
+    async def test_embedded_mcp_429_is_classified_as_rate_limit(self):
+        """A text MCP response containing HTTP 429 is a failure, not successful data."""
+        call_count = 0
+
+        async def _embedded_429():
+            nonlocal call_count
+            call_count += 1
+            return [
+                {
+                    "type": "text",
+                    "text": (
+                        '{"error":"Search failed","status":429,'
+                        '"detail":{"error":"Your request has been blocked due to excessive requests."}}'
+                    ),
+                }
+            ]
+
+        result = await async_call_provider(
+            _embedded_429,
+            provider_name="tavily",
+            safe_failure_message="Hotel search temporarily unavailable",
+            specialist="hotel_agent",
+            capability="HOTEL_WEB_RESEARCH",
+            max_attempts=1,
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(call_count, 1)
+        self.assertEqual(result.error_code, ErrorCode.RATE_LIMITED)
+        self.assertEqual(result.trace_entry.error_code, ErrorCode.RATE_LIMITED.value)
+        self.assertEqual(result.trace_entry.status, "UNAVAILABLE")
+
 
 class FlightAgentDegradationTest(unittest.TestCase):
 
@@ -107,8 +139,8 @@ class FlightAgentDegradationTest(unittest.TestCase):
         self.assertNotIn("RuntimeError", result["flight_results"])
         self.assertIn("Live flight data is temporarily unavailable", result["flight_results"])
 
-    def test_hotel_agent_does_not_increment_llm_calls(self):
-        """hotel_agent must NOT increment llm_calls (Tavily-only, no LLM)."""
+    def test_hotel_agent_counts_presentation_llm(self):
+        """hotel_agent counts the user-facing evidence presentation pass."""
         import backend
         state = {
             "user_query": "Plan a trip to Dubai",
@@ -119,11 +151,53 @@ class FlightAgentDegradationTest(unittest.TestCase):
         async def _mock_tavily(query):
             return "Hotel results from Tavily"
 
-        with patch.object(backend, 'tavily_mcp_search', side_effect=_mock_tavily):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="## Dubai hotels\nHotel results from Tavily"))
+
+        with patch.object(backend, 'tavily_mcp_search', side_effect=_mock_tavily), \
+             patch.object(backend, '_llm_hotel', mock_llm):
             result = asyncio.run(backend.hotel_agent(state))
 
-        self.assertEqual(result["llm_calls"], 3, "hotel_agent must not change llm_calls")
+        self.assertEqual(result["llm_calls"], 4)
         self.assertEqual(result["specialist_statuses"]["hotel_agent"], "COMPLETED")
+
+    def test_hotel_agent_reports_tavily_rate_limit_without_calling_llm(self):
+        import backend
+
+        state = {
+            "user_query": "Hotels in London",
+            "trip_constraints": {"destination": "London", "travel_style": "mid-range"},
+            "specialist_statuses": {},
+            "llm_calls": 2,
+            "llm_token_usage": {},
+        }
+
+        async def _mock_tavily(_query):
+            return [
+                {
+                    "type": "text",
+                    "text": (
+                        '{"error":"Search failed","status":429,'
+                        '"detail":{"error":"Your request has been blocked due to excessive requests. '
+                        'Please reduce the rate of requests."}}'
+                    ),
+                }
+            ]
+
+        hotel_llm = MagicMock()
+        hotel_llm.ainvoke = AsyncMock(side_effect=AssertionError("Hotel LLM must not run without evidence"))
+
+        with patch.object(backend, "tavily_mcp_search", side_effect=_mock_tavily), \
+             patch.object(backend, "_llm_hotel", hotel_llm):
+            result = asyncio.run(backend.hotel_agent(state))
+
+        self.assertEqual(result["specialist_statuses"]["hotel_agent"], "DEGRADED")
+        self.assertFalse(result["hotel_data_available"])
+        self.assertEqual(result["llm_calls"], 2)
+        self.assertIn("temporarily rate-limited by Tavily", result["hotel_results"])
+        self.assertIn("not a hotel-agent reasoning failure", result["hotel_results"])
+        self.assertNotIn("No reliable hotel-specific sources", result["hotel_results"])
+        hotel_llm.ainvoke.assert_not_awaited()
 
     def test_grounding_contract_maintained_on_degradation(self):
         """When flight data is unavailable, final_agent must not fabricate flight info."""

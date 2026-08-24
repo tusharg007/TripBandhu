@@ -46,6 +46,7 @@ from schemas import (
     CapabilityEvidence,
     CapabilityTraceEntry,
     CapabilityHealth,
+    ErrorCode,
     EvidenceKind,
     SourceReference,
     RunStatus,
@@ -69,7 +70,9 @@ from agent_config import (
     MAX_TOKENS_BY_TASK,
 )
 from provider_utils import async_call_provider
-from llm_utils import invoke_llm, merge_token_usage
+from llm_utils import invoke_llm, invoke_llm_complete_text, merge_token_usage
+from location_utils import normalize_weather_location
+from tools.flight_tool import DEFAULT_ORIGIN_IATA, resolve_location_to_iata
 
 
 def get_database_url() -> str | None:
@@ -111,6 +114,8 @@ _llm_supervisor = _llm_control.bind(
 
 _llm_budget   = _llm_control.bind(max_tokens=MAX_TOKENS_BY_TASK["budget"])
 _llm_flight   = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["flight_summary"])
+_llm_hotel    = _llm_control.bind(max_tokens=MAX_TOKENS_BY_TASK["hotel_summary"])
+_llm_weather  = _llm_control.bind(max_tokens=MAX_TOKENS_BY_TASK["weather_summary"])
 _llm_itinerary = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["itinerary"])
 _llm_revision  = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["revision"])
 # final_synthesis uses control model (gpt-oss-20b, 12k TPM) because the full
@@ -177,6 +182,11 @@ FLIGHT_UNAVAILABLE_MESSAGE = (
 HOTEL_UNAVAILABLE_MESSAGE = (
     "Live hotel search is temporarily unavailable. General accommodation and "
     "neighborhood guidance will be provided based on the destination."
+)
+HOTEL_RATE_LIMIT_MESSAGE = (
+    "Live hotel search is temporarily rate-limited by Tavily because too many requests "
+    "reached the provider. This is not a hotel-agent reasoning failure. Wait briefly and "
+    "start a new trip, or check a trusted accommodation platform directly."
 )
 WEATHER_UNAVAILABLE_MESSAGE = (
     "Live weather forecast is temporarily unavailable for this destination. "
@@ -388,11 +398,21 @@ async def flight_agent(state: TravelState):
     llm_token_usage = dict(state.get("llm_token_usage", {}))
     trace = list(state.get("capability_trace", []))
     evidence_store = dict(state.get("evidence_store", {}))
+    origin_iata = resolve_location_to_iata(orig) or (DEFAULT_ORIGIN_IATA if not orig else None)
+    destination_iata = resolve_location_to_iata(dest)
+    route_args = {
+        key: value
+        for key, value in {
+            "dep_iata": origin_iata,
+            "arr_iata": destination_iata,
+        }.items()
+        if value
+    }
 
     validate_specialist_capability("flight_agent", "FLIGHT_ROUTE_SEARCH")
 
     routes_result = await async_call_provider(
-        lambda: aviation_mcp_call("list_routes"),
+        lambda: aviation_mcp_call("list_routes", route_args),
         provider_name="aviation",
         safe_failure_message=FLIGHT_UNAVAILABLE_MESSAGE,
         specialist="flight_agent",
@@ -471,7 +491,7 @@ async def flight_agent(state: TravelState):
             destination=dest,
             flight_evidence=flight_ev.summary,
         )
-        response, tokens = await invoke_llm(
+        flight_text, tokens, generation_calls = await invoke_llm_complete_text(
             _llm_flight,
             [
                 SystemMessage(content="You are an expert travel flight planner."),
@@ -482,13 +502,13 @@ async def flight_agent(state: TravelState):
         llm_token_usage = merge_token_usage(llm_token_usage, tokens)
         statuses["flight_agent"] = "COMPLETED"
         return {
-            "flight_results": response.content,
+            "flight_results": flight_text,
             "flight_data_available": True,
             "specialist_statuses": statuses,
             "capability_trace": trace,
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Flight recommendations generated.")],
-            "llm_calls": llm_calls + 1,
+            "llm_calls": llm_calls + generation_calls,
             "llm_token_usage": llm_token_usage,
         }
     except Exception as exc:
@@ -509,9 +529,29 @@ async def flight_agent(state: TravelState):
 # =========================
 # Hotel Agent — Tavily Web Research & Source Preservation
 # =========================
+_HOTEL_PRESENTATION_SYSTEM = (
+    "You turn verified accommodation web evidence into an end-user hotel brief. "
+    "Use only the supplied evidence. Exclude unrelated pages, raw payloads, template text, "
+    "and developer diagnostics. Recommend up to six genuinely supported properties or areas, "
+    "explain who each suits and its location advantage, and preserve the supplied source links. "
+    "Do not invent prices, star ratings, availability, amenities, or review scores. Clearly say "
+    "that availability and rates must be checked before booking. Return polished Markdown."
+)
+
+
 async def hotel_agent(state: TravelState):
-    query = f"Best hotels, neighborhoods, and places to stay for {state['user_query']}"
+    constraints = state.get("trip_constraints") or {}
+    destination = constraints.get("destination") or state["user_query"]
+    budget = constraints.get("budget") or ""
+    travel_style = constraints.get("travel_style") or ""
+    query = (
+        f"Hotels accommodation neighborhoods and trusted places to stay in {destination}. "
+        f"Traveller needs: {travel_style or 'general'}, budget: {budget or 'not specified'}. "
+        "Include property names, neighborhood, and practical location details."
+    )
     statuses = dict(state.get("specialist_statuses", {}))
+    llm_calls = state.get("llm_calls", 0)
+    llm_token_usage = dict(state.get("llm_token_usage", {}))
     trace = list(state.get("capability_trace", []))
     evidence_store = dict(state.get("evidence_store", {}))
 
@@ -531,42 +571,81 @@ async def hotel_agent(state: TravelState):
         trace.append(result.trace_entry.model_dump())
 
     if result.success:
-        statuses["hotel_agent"] = "COMPLETED"
         hotel_ev = normalize_tavily_results(result.data, query, latency_ms=result.latency_ms)
         evidence_store["HOTEL_WEB_RESEARCH"] = hotel_ev.model_dump()
 
+        if not hotel_ev.data:
+            statuses["hotel_agent"] = "DEGRADED"
+            return {
+                "hotel_results": hotel_ev.summary,
+                "hotel_data_available": False,
+                "specialist_statuses": statuses,
+                "capability_trace": trace,
+                "evidence_store": evidence_store,
+                "messages": [AIMessage(content="No relevant hotel sources were found.")],
+                "llm_calls": llm_calls,
+                "llm_token_usage": llm_token_usage,
+            }
+
+        try:
+            response, tokens = await invoke_llm(
+                _llm_hotel,
+                [
+                    SystemMessage(content=_HOTEL_PRESENTATION_SYSTEM),
+                    HumanMessage(content=(
+                        f"Destination: {destination}\n"
+                        f"Original request: {state['user_query']}\n\n"
+                        f"Filtered accommodation evidence:\n{hotel_ev.summary}"
+                    )),
+                ],
+                task_name="hotel_summary",
+            )
+            hotel_text = response.content
+            llm_calls += 1
+            llm_token_usage = merge_token_usage(llm_token_usage, tokens)
+            statuses["hotel_agent"] = "COMPLETED"
+        except Exception as exc:
+            print(f"[hotel_agent] Presentation LLM failed: {type(exc).__name__}: {exc}", flush=True)
+            hotel_text = hotel_ev.summary
+            statuses["hotel_agent"] = "DEGRADED"
+
         return {
-            "hotel_results": hotel_ev.summary,
+            "hotel_results": hotel_text,
             "hotel_data_available": True,
             "specialist_statuses": statuses,
             "capability_trace": trace,
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Hotel information processed.")],
-            "llm_calls": state.get("llm_calls", 0),
-            "llm_token_usage": state.get("llm_token_usage", {}),
+            "llm_calls": llm_calls,
+            "llm_token_usage": llm_token_usage,
         }
     else:
         statuses["hotel_agent"] = "DEGRADED"
+        hotel_failure_message = (
+            HOTEL_RATE_LIMIT_MESSAGE
+            if result.error_code == ErrorCode.RATE_LIMITED
+            else (result.safe_message or HOTEL_UNAVAILABLE_MESSAGE)
+        )
         ev_unavailable = CapabilityEvidence(
             capability="HOTEL_WEB_RESEARCH",
             provider="tavily",
             tool_name="tavily_search",
             evidence_kind=EvidenceKind.UNAVAILABLE,
             status=CapabilityHealth.UNAVAILABLE,
-            summary=HOTEL_UNAVAILABLE_MESSAGE,
+            summary=hotel_failure_message,
             error_code=result.error_code,
         )
         evidence_store["HOTEL_WEB_RESEARCH"] = ev_unavailable.model_dump()
 
         return {
-            "hotel_results": result.safe_message,
+            "hotel_results": hotel_failure_message,
             "hotel_data_available": False,
             "specialist_statuses": statuses,
             "capability_trace": trace,
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Hotel data unavailable.")],
-            "llm_calls": state.get("llm_calls", 0),
-            "llm_token_usage": state.get("llm_token_usage", {}),
+            "llm_calls": llm_calls,
+            "llm_token_usage": llm_token_usage,
         }
 
 
@@ -574,6 +653,31 @@ async def hotel_agent(state: TravelState):
 # Weather Agent — OpenWeather MCP & Normalization
 # Phase 3: Destination priority — supervisor constraints > LLM fallback
 # =========================
+_WEATHER_PRESENTATION_SYSTEM = (
+    "You turn normalized weather evidence into concise, friendly travel guidance. "
+    "Use only the facts supplied. Never show raw JSON, Python dictionaries, tool errors, URLs, "
+    "API details, stack traces, or developer diagnostics. Summarize current conditions and the "
+    "forecast, then add practical packing or timing advice supported by those conditions. "
+    "Do not imply that a short forecast covers dates outside its stated range. "
+    "Your entire response must be weather-only: never include flights, hotels, an itinerary, "
+    "budgets, costs, restaurants, or sightseeing. Return concise Markdown."
+)
+
+
+_WEATHER_OUT_OF_SCOPE_MARKERS = (
+    "budget", "cost breakdown", "estimated cost", "itinerary", "day 1", "day1",
+    "suggested hotel", "accommodation", "flight", "sightseeing", "food & dining",
+)
+
+
+def _is_weather_only_presentation(text: str) -> bool:
+    """Reject cross-specialist content before it can reach the Weather tab."""
+    normalized = " ".join(str(text or "").casefold().split())
+    if not normalized:
+        return False
+    return not any(marker in normalized for marker in _WEATHER_OUT_OF_SCOPE_MARKERS)
+
+
 async def weather_agent(state: TravelState):
     statuses = dict(state.get("specialist_statuses", {}))
     llm_calls = state.get("llm_calls", 0)
@@ -595,6 +699,8 @@ async def weather_agent(state: TravelState):
         except Exception as exc:
             print(f"[weather_agent] Destination extraction failed: {exc}", flush=True)
             city = "your destination"
+
+    city = normalize_weather_location(city) or "your destination"
 
     weather_result = await async_call_provider(
         lambda: weather_mcp_search(city),
@@ -622,18 +728,48 @@ async def weather_agent(state: TravelState):
         forecast_result.trace_entry.sequence = len(trace) + 1
         trace.append(forecast_result.trace_entry.model_dump())
 
-    if weather_result.success and forecast_result.success:
+    if weather_result.success or forecast_result.success:
         weather_ev = normalize_weather_results(
-            current_data=weather_result.data,
-            forecast_data=forecast_result.data,
+            current_data=weather_result.data if weather_result.success else None,
+            forecast_data=forecast_result.data if forecast_result.success else None,
             city=city,
             latency_ms=(weather_result.latency_ms or 0) + (forecast_result.latency_ms or 0),
         )
         evidence_store["WEATHER_FORECAST"] = weather_ev.model_dump()
-        statuses["weather_agent"] = "COMPLETED"
+        statuses["weather_agent"] = (
+            "COMPLETED" if weather_result.success and forecast_result.success else "DEGRADED"
+        )
+
+        try:
+            response, tokens = await invoke_llm(
+                _llm_weather,
+                [
+                    SystemMessage(content=_WEATHER_PRESENTATION_SYSTEM),
+                    HumanMessage(content=(
+                        f"Destination: {city}\n\n"
+                        f"Weather evidence:\n{weather_ev.summary}\n\n"
+                        "Produce only: current conditions, near-term forecast, and packing/timing advice."
+                    )),
+                ],
+                task_name="weather_summary",
+            )
+            llm_calls += 1
+            llm_token_usage = merge_token_usage(llm_token_usage, tokens)
+            if _is_weather_only_presentation(response.content):
+                weather_text = response.content
+            else:
+                print(
+                    "[weather_agent] Rejected cross-specialist presentation; using normalized weather fallback.",
+                    flush=True,
+                )
+                weather_text = weather_ev.summary
+        except Exception as exc:
+            print(f"[weather_agent] Presentation LLM failed: {type(exc).__name__}: {exc}", flush=True)
+            weather_text = weather_ev.summary
+            statuses["weather_agent"] = "DEGRADED"
 
         return {
-            "weather_results": weather_ev.summary,
+            "weather_results": weather_text,
             "weather_data_available": True,
             "specialist_statuses": statuses,
             "capability_trace": trace,
@@ -684,7 +820,11 @@ _BUDGET_SYSTEM = (
     "- AviationStack does not supply live ticket prices. If flight data is unavailable or schedule-only, "
     "state clearly that airfare is estimated and must be verified.\n"
     "- Web hotel rates are search-based approximations ([WEB_SOURCE]); do not present them as locked booking rates.\n"
-    "- Clearly differentiate verified provider data from model estimation categories."
+    "- Clearly differentiate verified provider data from model estimation categories.\n"
+    "- Do not invent the traveller's salary or monthly income. If no explicit budget amount was provided, "
+    "state that affordability against the user's limit cannot be determined and provide a planning range.\n"
+    "- Complete every requested section and table. Never stop mid-row, mid-bullet, or mid-sentence.\n"
+    "- Use INR as the primary currency for an India-origin trip; label any exchange rate as an estimate."
 )
 
 
@@ -701,11 +841,13 @@ async def budget_agent(state: TravelState):
         "Return:\n1. Estimated cost breakdown by category\n"
         "2. Budget feasibility assessment\n"
         "3. Cost-saving recommendations\n"
-        "4. Risk areas"
+        "4. Risk areas\n"
+        "5. Budget assumptions and verification checklist\n\n"
+        "Finish all five sections. Keep tables compact enough to complete the response."
     )
 
     try:
-        response, tokens = await invoke_llm(
+        budget_text, tokens, generation_calls = await invoke_llm_complete_text(
             _llm_budget,
             [
                 SystemMessage(content=_BUDGET_SYSTEM),
@@ -716,10 +858,10 @@ async def budget_agent(state: TravelState):
         llm_token_usage = merge_token_usage(llm_token_usage, tokens)
         statuses["budget_agent"] = "COMPLETED"
         return {
-            "budget_results": response.content,
+            "budget_results": budget_text,
             "specialist_statuses": statuses,
             "messages": [AIMessage(content="Budget assessment generated.")],
-            "llm_calls": _incr_llm(state),
+            "llm_calls": state.get("llm_calls", 0) + generation_calls,
             "llm_token_usage": llm_token_usage,
         }
     except Exception as exc:
@@ -746,7 +888,10 @@ _ITINERARY_SYSTEM = (
     "'Live flight data was unavailable; check schedules with airlines.' "
     "Do NOT fabricate fake flight numbers or fake price ranges.\n"
     "- For hotel recommendations from web sources ([WEB_SOURCE]), preserve neighborhood and accommodation names.\n"
-    "- Never invent factual data that contradicts the Grounded Evidence section."
+    "- Never invent factual data that contradicts the Grounded Evidence section.\n"
+    "- Complete every day requested by the user. Never end mid-day or mid-sentence. If space is "
+    "tight, make each day more concise instead of omitting later days.\n"
+    "- End with a short 'Before you book' checklist so completion is unambiguous."
 )
 
 
@@ -761,11 +906,12 @@ async def itinerary_agent(state: TravelState):
         f"Trip Constraints:\n{state.get('trip_constraints', {})}\n\n"
         f"Grounded Evidence & Provenance:\n{evidence_context}\n\n"
         f"Budget Analysis:\n{state.get('budget_results', '')}\n\n"
-        "Make the itinerary practical, budget-aware, and ready for human review."
+        "Make the itinerary practical, budget-aware, and ready for human review. "
+        "Include all requested days and finish the complete plan."
     )
 
     try:
-        response, tokens = await invoke_llm(
+        itinerary_content, tokens, generation_calls = await invoke_llm_complete_text(
             _llm_itinerary,
             [
                 SystemMessage(content=_ITINERARY_SYSTEM),
@@ -775,8 +921,7 @@ async def itinerary_agent(state: TravelState):
         )
         llm_token_usage = merge_token_usage(llm_token_usage, tokens)
         statuses["itinerary_agent"] = "COMPLETED"
-        itinerary_content = response.content
-        llm_calls = _incr_llm(state)
+        llm_calls = state.get("llm_calls", 0) + generation_calls
         approval_request = (
             "Please review the generated draft itinerary. Approve it to create the "
             "final polished plan, or provide feedback for revision."
@@ -829,7 +974,7 @@ async def itinerary_revision_agent(state: TravelState):
     )
 
     try:
-        response, tokens = await invoke_llm(
+        revised_itinerary, tokens, generation_calls = await invoke_llm_complete_text(
             _llm_revision,
             [
                 SystemMessage(content=_REVISION_SYSTEM),
@@ -839,8 +984,7 @@ async def itinerary_revision_agent(state: TravelState):
         )
         llm_token_usage = merge_token_usage(llm_token_usage, tokens)
         statuses["itinerary_agent"] = "COMPLETED"
-        revised_itinerary = response.content
-        llm_calls = _incr_llm(state)
+        llm_calls = state.get("llm_calls", 0) + generation_calls
         approval_request = (
             f"Revised itinerary (revision {iteration + 1}). "
             "Please review and approve, or provide further feedback."
@@ -1001,13 +1145,13 @@ async def final_agent(state: TravelState):
     # Sending raw evidence_context on top of them repeats the same provider facts.
     # Provenance labels (PROVIDER_DATA, WEB_SOURCE, MODEL_ESTIMATE) are preserved via
     # provider_status block and grounding rules in the specialist summaries themselves.
-    # Cap verbose sections to keep prompt within gpt-oss-20b TPM limits.
-    # Hotel results from Tavily can be very long after the MCP-unwrap fix.
-    _hotel_summary  = (state.get("hotel_results",   "") or "(not retrieved)")[:1800]
-    _weather_summary = (state.get("weather_results", "") or "(not retrieved)")[:800]
-    _flight_summary  = (state.get("flight_results",  "") or "(not retrieved)")[:800]
-    _budget_summary  = (state.get("budget_results",  "") or "(not retrieved)")[:1000]
-    _itinerary_draft = (state.get("itinerary",        "") or "(none)")[:2500]
+    # These are already normalized specialist summaries. Preserve them in full:
+    # character slicing used to cut flight records and approved itineraries midway.
+    _hotel_summary = state.get("hotel_results", "") or "(not retrieved)"
+    _weather_summary = state.get("weather_results", "") or "(not retrieved)"
+    _flight_summary = state.get("flight_results", "") or "(not retrieved)"
+    _budget_summary = state.get("budget_results", "") or "(not retrieved)"
+    _itinerary_draft = state.get("itinerary", "") or "(none)"
 
     final_prompt = (
         f"## Instructions\n{review_instruction}\n\n"

@@ -29,19 +29,25 @@ LLM_REASONING_FORMAT: str = os.getenv("LLM_REASONING_FORMAT", "hidden")
 # ---------------------------------------------------------------------------
 # Per-task output token budgets
 # ---------------------------------------------------------------------------
-# Values are conservative: observed outputs + ~25% safety margin.
-# Guardrail/supervisor use the control model; others use the generation model.
-# Do NOT lower these below observed real output lengths.
+# Output budgets are sized so user-facing specialists can finish complete sections.
+# Provider evidence is filtered before prompting; generated answers are not cut with
+# character slicing after generation.
 MAX_TOKENS_BY_TASK: dict[str, int] = {
     "guardrail":            350,
     "supervisor":           600,
-    "flight_summary":       900,
-    "budget":               900,
-    "itinerary":           2200,   # gpt-oss-120b: 8k TPM limit; ~5k input + 2200 output fits
-    "revision":            2200,   # same
-    "final_synthesis":     2800,   # gpt-oss-20b: 12k TPM limit; ~5k input + 2800 output fits
+    "flight_summary":      1800,
+    "hotel_summary":       1400,
+    "weather_summary":      900,
+    "budget":              2400,
+    "itinerary":           3600,
+    "revision":            3600,
+    "final_synthesis":     3800,
     "destination_extract":   64,   # Control model: destination name only
 }
+
+# A generation that explicitly stops because it reached max_tokens may continue in
+# bounded follow-up segments. This prevents half-sentences without allowing loops.
+MAX_LLM_CONTINUATIONS: int = int(os.getenv("MAX_LLM_CONTINUATIONS", "2"))
 
 # ---------------------------------------------------------------------------
 # Provider timeouts (seconds)

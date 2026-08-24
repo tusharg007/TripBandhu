@@ -10,8 +10,8 @@ from schemas import GuardrailDecision, GuardrailCategory, SupervisorDecision, Ag
 
 class LLMAccountingTest(unittest.TestCase):
 
-    def test_hotel_agent_does_not_count_llm(self):
-        """hotel_agent calls Tavily only — llm_calls stays unchanged."""
+    def test_hotel_agent_counts_presentation_llm(self):
+        """hotel_agent uses one LLM pass to turn filtered evidence into user copy."""
         import backend
         state = {
             "user_query": "Find hotels in Kyoto",
@@ -23,10 +23,15 @@ class LLMAccountingTest(unittest.TestCase):
         async def _mock_tavily(query):
             return "Hotel: Kyoto Century Hotel"
 
-        with patch.object(backend, 'tavily_mcp_search', side_effect=_mock_tavily):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="## Kyoto stays\n- Kyoto Century Hotel"))
+
+        with patch.object(backend, 'tavily_mcp_search', side_effect=_mock_tavily), \
+             patch.object(backend, '_llm_hotel', mock_llm):
             result = asyncio.run(backend.hotel_agent(state))
 
-        self.assertEqual(result["llm_calls"], 5, "hotel_agent must not increment llm_calls")
+        self.assertEqual(result["llm_calls"], 6)
+        self.assertIn("Kyoto stays", result["hotel_results"])
 
     def test_flight_agent_counts_llm_on_success(self):
         """flight_agent increments llm_calls exactly once on LLM success."""
@@ -40,7 +45,7 @@ class LLMAccountingTest(unittest.TestCase):
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="ANA and JAL fly this route"))
 
-        async def _mock_aviation(tool_name):
+        async def _mock_aviation(tool_name, tool_args=None):
             return ["HND", "NRT"] if tool_name == "list_airports" else ["ANA", "JAL"]
 
         with patch.object(backend, 'aviation_mcp_call', side_effect=_mock_aviation), \
@@ -161,7 +166,7 @@ class LLMAccountingTest(unittest.TestCase):
 
         self.assertEqual(result["llm_calls"], 7)
 
-    def test_weather_agent_does_not_count_llm_when_destination_available(self):
+    def test_weather_agent_counts_only_presentation_llm_when_destination_available(self):
         """
         Phase 3: weather_agent must NOT call extract_destination_async (no LLM call)
         when supervisor has already populated trip_constraints.destination.
@@ -182,15 +187,18 @@ class LLMAccountingTest(unittest.TestCase):
         async def _mock_forecast(city):
             return "Clear skies for a week"
 
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Sunny and warm in Kyoto."))
+
         with patch.object(backend, 'extract_destination_async',
                           side_effect=AssertionError("extract_destination_async must NOT be called when destination is in constraints")), \
              patch.object(backend, 'weather_mcp_search', side_effect=_mock_weather), \
-             patch.object(backend, 'forecast_mcp_search', side_effect=_mock_forecast):
+             patch.object(backend, 'forecast_mcp_search', side_effect=_mock_forecast), \
+             patch.object(backend, '_llm_weather', mock_llm):
             result = asyncio.run(backend.weather_agent(state))
 
-        # llm_calls must NOT be incremented (no LLM call for extraction)
-        self.assertEqual(result["llm_calls"], 2,
-                         "weather_agent must not increment llm_calls when destination is already in trip_constraints")
+        self.assertEqual(result["llm_calls"], 3,
+                         "Only the weather presentation LLM should run when destination is known")
 
     def test_weather_agent_counts_llm_when_destination_absent(self):
         """
@@ -222,14 +230,18 @@ class LLMAccountingTest(unittest.TestCase):
             extract_called.append(True)
             return "Kyoto"
 
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Sunny and warm in Kyoto."))
+
         with patch.object(backend, 'extract_destination_async', side_effect=_tracking_extract), \
              patch.object(backend, 'weather_mcp_search', side_effect=_mock_weather), \
-             patch.object(backend, 'forecast_mcp_search', side_effect=_mock_forecast):
+             patch.object(backend, 'forecast_mcp_search', side_effect=_mock_forecast), \
+             patch.object(backend, '_llm_weather', mock_llm):
             result = asyncio.run(backend.weather_agent(state))
 
         self.assertTrue(extract_called, "extract_destination_async should be called when destination is absent")
-        self.assertEqual(result["llm_calls"], 3,
-                         "weather_agent must increment llm_calls when LLM destination extraction is performed")
+        self.assertEqual(result["llm_calls"], 4,
+                         "Destination extraction and weather presentation should each be counted")
 
     def test_supervisor_guardrail_counts_both_llm_invocations(self):
         """supervisor_agent counts 1 for guardrail LLM and 1 for supervisor LLM (total +2)."""

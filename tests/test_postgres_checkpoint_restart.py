@@ -55,7 +55,7 @@ async def execute_postgres_checkpoint_restart_flow(db_url: str) -> bool:
         reasoning="Full 5-day Tokyo trip planning.",
     )
 
-    async def _mock_aviation(tool_name):
+    async def _mock_aviation(tool_name, tool_args=None):
         return ["HND", "NRT"]
 
     async def _mock_tavily(query):

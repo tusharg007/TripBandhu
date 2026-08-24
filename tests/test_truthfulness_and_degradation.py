@@ -49,7 +49,7 @@ class TruthfulnessAndDegradationTest(unittest.TestCase):
         mock_llm.invoke.return_value = AIMessage(content="Direct flights available on ANA and JAL")
         mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Direct flights available on ANA and JAL"))
 
-        async def _mock_aviation(tool_name):
+        async def _mock_aviation(tool_name, tool_args=None):
             return ["HND", "NRT"]
 
         with patch("backend.aviation_mcp_call", side_effect=_mock_aviation), \

@@ -38,7 +38,7 @@ class SpecialistOnlyE2ETest(unittest.TestCase):
             AIMessage(content="Flight Summary for Delhi to Tokyo:\n1. ANA...\n2. JAL..."),  # final_agent
         ])
 
-        async def _mock_aviation(tool_name):
+        async def _mock_aviation(tool_name, tool_args=None):
             return ["DEL", "HND"] if tool_name == "list_airports" else ["ANA", "JAL", "Air India"]
 
         with patch.object(backend, '_llm_guardrail') as mg, \
@@ -79,6 +79,7 @@ class SpecialistOnlyE2ETest(unittest.TestCase):
         with patch.object(backend, '_llm_guardrail') as mg, \
              patch.object(backend, '_llm_supervisor') as ms, \
              patch.object(backend, 'tavily_mcp_search', side_effect=_mock_tavily), \
+             patch.object(backend, '_llm_hotel', mock_llm), \
              patch.object(backend, '_llm_final', mock_llm):
 
             mg.ainvoke = AsyncMock(return_value=allowed)

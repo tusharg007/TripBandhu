@@ -48,6 +48,14 @@ Most AI travel assistants suffer from three fundamental flaws:
 - **Resilient MCP Capability Layer** — All external tools pass through validated contracts with schema-drift detection and graceful degradation
 - **Checkpoint Persistence** — `AsyncPostgresSaver` ensures graph runs survive complete service restarts
 
+### Current Reliability Hardening
+
+- **Clean specialist presentation** — Hotel and weather evidence is filtered, normalized, and converted into traveler-facing Markdown instead of exposing raw provider payloads or developer errors.
+- **Strict specialist boundaries** — Weather output is rejected if it leaks budget, hotel, flight, or itinerary content; unsupported hotel search results are excluded before synthesis.
+- **Complete long-form output** — Flight, budget, draft itinerary, and revision tasks use bounded continuation when a model stops at its token limit, avoiding half-finished tables and truncated plans.
+- **Typed provider failures** — Errors embedded inside successful MCP envelopes are detected centrally. Tavily HTTP `429` responses are reported as temporary provider rate limits rather than misleadingly described as poor hotel-search results.
+- **Location-aware tools** — Common city aliases are normalized for weather lookups, while flight requests resolve origin and destination locations to IATA codes before calling AviationStack.
+
 ---
 
 ## 📐 System Architecture
@@ -103,7 +111,7 @@ TripBandhu uses **task-specific Groq models** via the `make_groq_llm` factory wi
 
 | Task | Model | Rationale |
 | :--- | :--- | :--- |
-| Guardrail, Supervisor, Budget, Final Synthesis | `openai/gpt-oss-20b` | 12k TPM limit; structured JSON; fast |
+| Guardrail, Supervisor, Hotel/Weather Presentation, Budget, Final Synthesis | `openai/gpt-oss-20b` | 12k TPM limit; structured routing and concise specialist presentation |
 | Flight Summary, Itinerary, Revision | `openai/gpt-oss-120b` | Higher quality generation; 8k TPM |
 
 > **Why different models for different tasks?**
@@ -349,7 +357,7 @@ User Query
 
 | Suite | Result |
 | :--- | :--- |
-| Pytest regression | ✅ 124 fast + 1 PostgreSQL integration test |
+| Pytest regression | ✅ 137 fast + 1 PostgreSQL integration test |
 | Benchmark FAST mode (49 cases) | ✅ 49 / 49 passed |
 | Benchmark POSTGRES mode (50 cases) | ✅ 50 / 50 passed |
 | Live HITL validation on Render | ✅ Passed |
@@ -365,7 +373,8 @@ User Query
 | `413 Request too large` | Groq TPM limit exceeded | Fixed in v1.0.2 — final synthesis uses `gpt-oss-20b` |
 | `No module named 'reportlab'` when downloading a PDF | Dependencies were installed from an older or malformed requirements file | Pull the latest code and run `pip install -r requirements.txt` in the active environment |
 | Flights always "unavailable" | AviationStack key missing or uvx crash | Check `AVIATION_STACK_API_KEY` in `.env`; test uvx manually |
-| Weather shows raw JSON | MCP envelope not unwrapped | Fixed in v1.0.2 — `_unwrap_mcp()` applied to weather normalizer |
+| Hotels/weather show raw provider text | Provider evidence reached the UI without relevance and presentation layers | Hotel relevance filtering, safe weather normalization, and dedicated presentation passes now produce end-user Markdown |
+| Hotels show `DEGRADED` and Tavily reports HTTP `429` | Tavily rejected the live search because the API key exceeded its request-rate allowance | Wait briefly and start a new trip. If it happens frequently, check Tavily usage and use a production/PAYGO key; TripBandhu does not blindly retry when MCP omits `Retry-After` |
 | Final plan: "could not be generated" | Groq rate limit / TPM exceeded | Wait 1 min (TPM reset) then retry |
 | LangSmith `403 Forbidden` or multipart ingest failures | Tracing key, workspace, or regional endpoint does not match | Keep `LANGSMITH_TRACING=false`, or configure the endpoint/workspace for the key before enabling tracing |
 | Browser still shows an older UI/PDF behavior | Cached static assets from an earlier deploy | Hard-refresh the page; deployed assets are commit-versioned |
@@ -380,7 +389,7 @@ TripBandhu/
 ├── eval/
 │   ├── eval_dataset.py               # 50-case benchmark dataset (v3.1.0)
 │   └── evaluator.py                  # FAST / POSTGRES benchmark harness
-├── tests/                            # 124 fast tests + PostgreSQL integration test
+├── tests/                            # 137 fast tests + PostgreSQL integration test
 ├── docs/assets/portfolio/            # UI screenshots
 ├── static/
 │   ├── script.js                     # Frontend logic, HITL, PDF export

@@ -19,6 +19,7 @@ import re
 from typing import Any
 
 from agent_config import (
+    MAX_LLM_CONTINUATIONS,
     PROVIDER_TIMEOUT_SECONDS,
     RATE_LIMIT_SHORT_WAIT_MAX_SECONDS,
     RATE_LIMIT_DEFAULT_RETRY_WAIT_SECONDS,
@@ -107,6 +108,13 @@ def merge_token_usage(base: dict[str, int], delta: dict[str, int]) -> dict[str, 
     return result
 
 
+def _response_reached_length_limit(response: Any) -> bool:
+    """Detect provider termination caused by an output-token limit."""
+    metadata = getattr(response, "response_metadata", {}) or {}
+    reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+    return str(reason or "").casefold() in {"length", "max_tokens", "max_output_tokens"}
+
+
 # ---------------------------------------------------------------------------
 # Centralized LLM invocation
 # ---------------------------------------------------------------------------
@@ -183,3 +191,51 @@ async def invoke_llm(
                     flush=True,
                 )
                 raise
+
+
+async def invoke_llm_complete_text(
+    runnable: Any,
+    messages: list[Any],
+    *,
+    task_name: str,
+    timeout_s: float | None = None,
+    max_continuations: int = MAX_LLM_CONTINUATIONS,
+) -> tuple[str, dict[str, int], int]:
+    """Invoke a text model and continue only when the provider reports truncation.
+
+    Returns the combined text, accumulated token usage, and the exact number of LLM
+    calls. Normal completions still use a single request.
+    """
+    conversation = list(messages)
+    parts: list[str] = []
+    total_usage: dict[str, int] = {}
+    calls = 0
+
+    for segment in range(max_continuations + 1):
+        response, usage = await invoke_llm(
+            runnable,
+            conversation,
+            task_name=task_name if segment == 0 else f"{task_name}_continuation",
+            timeout_s=timeout_s,
+        )
+        calls += 1
+        total_usage = merge_token_usage(total_usage, usage)
+        text = str(getattr(response, "content", "") or "").strip()
+        if text:
+            parts.append(text)
+
+        if not _response_reached_length_limit(response):
+            break
+
+        conversation.extend([
+            response,
+            {
+                "role": "user",
+                "content": (
+                    "Continue exactly where you stopped. Do not repeat earlier content. "
+                    "Finish every remaining requested section and end cleanly, never mid-sentence."
+                ),
+            },
+        ])
+
+    return "\n\n".join(parts), total_usage, calls
