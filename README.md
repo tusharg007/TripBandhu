@@ -59,7 +59,7 @@ flowchart TB
     end
 
     subgraph FastAPILayer ["FastAPI Application Core"]
-        API["FastAPI App\n(/api/travel, /api/travel/resume)"]
+        API["FastAPI App\n(/api/travel, /api/travel/resume, /api/travel/download-pdf)"]
         Guard["Input Guardrail\n(Scope, Safety & Prompt Injection)"]
         Pool["Application-Scoped\nAsyncPostgresSaver Pool"]
     end
@@ -349,7 +349,7 @@ User Query
 
 | Suite | Result |
 | :--- | :--- |
-| Pytest regression | ✅ 117 fast + 1 PostgreSQL integration test |
+| Pytest regression | ✅ 124 fast + 1 PostgreSQL integration test |
 | Benchmark FAST mode (49 cases) | ✅ 49 / 49 passed |
 | Benchmark POSTGRES mode (50 cases) | ✅ 50 / 50 passed |
 | Live HITL validation on Render | ✅ Passed |
@@ -363,6 +363,7 @@ User Query
 | `[WinError 10013]` on startup | The selected port is already in use | Set `$env:PORT="9000"` |
 | `ModuleNotFoundError: mcp.server.fastmcp` | Old uvx cache / wrong mcp version | Fixed in v1.0.2 via `--with mcp==1.28.1` in uvx args |
 | `413 Request too large` | Groq TPM limit exceeded | Fixed in v1.0.2 — final synthesis uses `gpt-oss-20b` |
+| `No module named 'reportlab'` when downloading a PDF | Dependencies were installed from an older or malformed requirements file | Pull the latest code and run `pip install -r requirements.txt` in the active environment |
 | Flights always "unavailable" | AviationStack key missing or uvx crash | Check `AVIATION_STACK_API_KEY` in `.env`; test uvx manually |
 | Weather shows raw JSON | MCP envelope not unwrapped | Fixed in v1.0.2 — `_unwrap_mcp()` applied to weather normalizer |
 | Final plan: "could not be generated" | Groq rate limit / TPM exceeded | Wait 1 min (TPM reset) then retry |
@@ -379,7 +380,7 @@ TripBandhu/
 ├── eval/
 │   ├── eval_dataset.py               # 50-case benchmark dataset (v3.1.0)
 │   └── evaluator.py                  # FAST / POSTGRES benchmark harness
-├── tests/                            # 117 fast tests + PostgreSQL integration test
+├── tests/                            # 124 fast tests + PostgreSQL integration test
 ├── docs/assets/portfolio/            # UI screenshots
 ├── static/
 │   ├── script.js                     # Frontend logic, HITL, PDF export
@@ -390,6 +391,7 @@ TripBandhu/
 ├── mcp_client.py                     # MCP server configs & tool adapters
 ├── capability_registry.py            # Evidence normalizers (Tavily, Weather, Flight)
 ├── provider_utils.py                 # Async MCP call wrapper (timeout + retry)
+├── pdf_generator.py                  # Validated server-side itinerary PDF renderer
 ├── agent_config.py                   # Timeouts, token budgets, model assignments
 ├── llm_utils.py                      # LLM invocation with rate-limit handling
 ├── schemas.py                        # Typed evidence, error codes, state schemas

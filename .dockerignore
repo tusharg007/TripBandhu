@@ -38,3 +38,5 @@ htmlcov/
 
 # Project-local non-runtime artifacts
 demo.excalidraw
+output/
+tmp/

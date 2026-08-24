@@ -209,6 +209,10 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# Generated PDF QA artifacts
+output/
+tmp/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

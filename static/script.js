@@ -394,7 +394,7 @@ function copyResult() {
         });
 }
 
-function downloadPDF() {
+async function downloadPDF() {
     // Primary source: in-memory markdown from the last API response.
     // Fallback: read plaintext from the rendered result box (survives page refresh
     // but loses markdown formatting — still produces a valid readable PDF).
@@ -411,43 +411,60 @@ function downloadPDF() {
 
     const downloadBtn = byId("downloadBtn");
     const oldText = downloadBtn.textContent;
-    downloadBtn.textContent = "Preparing PDF…";
+    downloadBtn.textContent = "Preparing PDF...";
     downloadBtn.disabled = true;
 
     const titleMatch = content.match(/^#+ (.+)/m);
     const title = titleMatch ? titleMatch[1].trim() : "TripBandhu Travel Plan";
 
-    console.log("[PDF] Sending", content.length, "chars to server, title:", title);
+    hideError();
 
-    fetch("/api/travel/download-pdf", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: content, title }),
-    })
-        .then((res) => {
-            console.log("[PDF] Server response status:", res.status);
-            if (!res.ok) throw new Error(`Server returned ${res.status}`);
-            return res.blob();
-        })
-        .then((blob) => {
-            console.log("[PDF] Blob received, size:", blob.size);
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "tripbandhu-travel-plan.pdf";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        })
-        .catch((err) => {
-            console.error("[PDF] Download failed:", err);
-            showError("Could not download PDF — check console for details.");
-        })
-        .finally(() => {
-            downloadBtn.textContent = oldText;
-            downloadBtn.disabled = false;
+    try {
+        const response = await fetch("/api/travel/download-pdf", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: content, title }),
         });
+
+        if (!response.ok) {
+            let message = "Could not generate the itinerary PDF.";
+            try {
+                const errorPayload = await response.json();
+                message = errorPayload.error || message;
+            } catch (_error) {
+                // The stable fallback above is used for a non-JSON proxy response.
+            }
+            throw new Error(message);
+        }
+
+        const contentType = response.headers.get("Content-Type") || "";
+        if (!contentType.toLowerCase().includes("application/pdf")) {
+            throw new Error("The server returned an invalid PDF response.");
+        }
+
+        const blob = await response.blob();
+        if (blob.size < 5) {
+            throw new Error("The generated PDF was empty.");
+        }
+
+        const disposition = response.headers.get("Content-Disposition") || "";
+        const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+        const filename = filenameMatch ? filenameMatch[1] : "tripbandhu-travel-plan.pdf";
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+        console.error("[PDF] Download failed:", error);
+        showError(error.message || "Could not download the itinerary PDF.");
+    } finally {
+        downloadBtn.textContent = oldText;
+        downloadBtn.disabled = false;
+    }
 }
 
 function bindQuickLoadPresets() {

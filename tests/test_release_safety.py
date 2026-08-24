@@ -26,6 +26,14 @@ class ReleaseSafetyTest(unittest.TestCase):
         self.assertIn("uvx --version", dockerfile)
         self.assertIn("EXPOSE 8080", dockerfile)
         self.assertIn("${PORT:-8080}", dockerfile)
+        self.assertIn("fonts-dejavu-core", dockerfile)
+
+    def test_pdf_runtime_dependency_is_pinned_on_its_own_line(self):
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+
+        self.assertIn("mcp==1.28.1", requirements)
+        self.assertIn("reportlab==5.0.0", requirements)
+        self.assertFalse(any("mcp==1.28.1reportlab" in line for line in requirements))
 
     def test_frontend_contains_hitl_and_sanitized_markdown_paths(self):
         template = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
@@ -36,7 +44,9 @@ class ReleaseSafetyTest(unittest.TestCase):
         self.assertIn("Request Revision", template)
         self.assertIn("dompurify@3.2.6", template)
         self.assertIn("/api/travel/resume", script)
+        self.assertIn("/api/travel/download-pdf", script)
         self.assertIn("DOMPurify.sanitize", script)
+        self.assertNotIn("html2pdf.bundle.min.js", template)
 
     def test_quick_load_presets_contract(self):
         template = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
