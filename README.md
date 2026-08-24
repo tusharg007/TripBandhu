@@ -1,50 +1,52 @@
 # TripBandhu
 
-*A stateful agentic travel-research system that coordinates specialist agents, live external capabilities, evidence-aware synthesis, and iterative human review.*
+*A stateful multi-agent travel research system that coordinates specialist agents, live external MCP capabilities, evidence-aware synthesis, and iterative human-in-the-loop review — built on LangGraph, FastAPI, and PostgreSQL.*
 
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-1.0+-1C3C3C?style=for-the-badge)](https://www.langchain.com/langgraph)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-AsyncPostgresSaver-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
-[![Docker](https://img.shields.io/badge/Docker-Compose_Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+[![Groq](https://img.shields.io/badge/Groq-GPT--OSS%2020B%20%2F%20120B-F55036?style=for-the-badge)](https://console.groq.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4B942?style=for-the-badge)](LICENSE)
+
+> **Latest release:** `v1.0.2` — GPT-OSS Migration & Runtime Reliability
+> **Live demo:** [https://tripbandhu.onrender.com](https://tripbandhu.onrender.com) *(free tier — cold starts; local run is recommended)*
 
 ---
 
 ## 📸 System in Action
 
-TripBandhu delivers a cohesive, retro-editorial human-in-the-loop travel planning experience backed by multi-agent coordination and typed evidence grounding.
-
 | **1. Agent Execution & Supervisor Routing** | **2. Interactive Human-in-the-Loop Review** |
 | :---: | :---: |
-| ![Agent Panel and Supervisor Decision](docs/assets/portfolio/agent-supervisor.png) | ![Human Review Gate with Draft Itinerary](docs/assets/portfolio/human-review.png) |
+| ![Agent Panel](docs/assets/portfolio/agent-supervisor.png) | ![Human Review Gate](docs/assets/portfolio/human-review.png) |
 | *Supervisor validates constraints and activates relevant specialists.* | *Graph pauses via LangGraph `interrupt()` for traveler approval.* |
 
 | **3. Grounded Specialist Intelligence** | **4. Final Travel Plan** |
 | :---: | :---: |
-| ![Specialist Intelligence Tabs](docs/assets/portfolio/evidence-specialists.png) | ![Final Travel Plan Response](docs/assets/portfolio/final-plan.png) |
-| *Live AviationStack, Tavily, and OpenWeather typed evidence tabs.* | *Traveler-approved synthesis with exportable markdown & PDF options.* |
+| ![Specialist Tabs](docs/assets/portfolio/evidence-specialists.png) | ![Final Plan](docs/assets/portfolio/final-plan.png) |
+| *Live AviationStack, Tavily, and OpenWeather typed evidence tabs.* | *Traveler-approved synthesis with copyable markdown & PDF export.* |
 
 ---
 
-## 🎯 Why I Built It
+## 🎯 Why TripBandhu Exists
 
 Most AI travel assistants suffer from three fundamental flaws:
-1. **Single-Prompt Hallucination**: Generating fictitious flights, stale hotel rates, and inaccurate weather forecasts from static model weights without live external grounding.
-2. **Brittle One-Shot Generation**: Trying to produce entire multi-day itineraries in a single unconstrained LLM completion without modular domain validation.
-3. **Black-Box Automation**: Producing final plans without allowing the traveler to inspect intermediate findings, refine preferences, or approve day-by-day schedules before finalizing.
 
-**TripBandhu** was engineered to treat travel planning as an **evidence-based distributed coordination problem**. It introduces deterministic routing, strict typed evidence contracts, schema-drift fallbacks, durable PostgreSQL checkpointing across server restarts, and a first-class Human-in-the-Loop (HITL) review cycle.
+1. **Single-Prompt Hallucination** — Fabricating flights, stale hotel rates, and inaccurate weather from static model weights with no live grounding.
+2. **Brittle One-Shot Generation** — Producing entire multi-day itineraries in a single unconstrained LLM pass without modular domain validation.
+3. **Black-Box Automation** — No mechanism for the traveler to inspect intermediate findings, refine preferences, or approve the schedule before finalizing.
+
+**TripBandhu** treats travel planning as an **evidence-based distributed coordination problem**: deterministic routing, strict typed evidence contracts, schema-drift fallbacks, durable PostgreSQL checkpointing, and first-class Human-in-the-Loop (HITL) review.
 
 ---
 
 ## 🏛️ Core Architectural Principles
 
-- **Deterministic State Machine**: Orchestrated via a stateful LangGraph directed acyclic graph (DAG) with explicit routing, state reducers, and defensive bounds.
-- **Truthful Evidence & Groundedness**: Every specialist output is tagged with explicit semantic classifications (`PROVIDER_DATA`, `WEB_SOURCE`, `MODEL_ESTIMATE`, `DERIVED`, `UNAVAILABLE`) and freshness indicators (`LIVE`, `FORECAST`, `REFERENCE`, `UNKNOWN`). Unsupported claims and fabricated fares are strictly blocked.
-- **True Async Human-in-the-Loop**: Execution suspends safely using LangGraph `interrupt()` and resumes with `Command(resume=...)`. Reaching the review cap safely terminates the loop without auto-finalizing unapproved plans.
-- **Resilient MCP Capability Layer**: All external tool interactions pass through validated capability contracts with schema-drift detection and graceful provider degradation.
-- **Checkpoint Persistence**: Backed by application-scoped `AsyncPostgresSaver` connection pools, enabling graph runs to survive complete service/checkpointer recreation through PostgreSQL.
+- **Deterministic State Machine** — Orchestrated via LangGraph DAG with explicit routing, state reducers, and defensive bounds
+- **Truthful Evidence & Groundedness** — Every output tagged with semantic classification (`PROVIDER_DATA`, `WEB_SOURCE`, `MODEL_ESTIMATE`, `DERIVED`, `UNAVAILABLE`) and freshness (`LIVE`, `FORECAST`, `REFERENCE`)
+- **True Async HITL** — Execution suspends via `interrupt()` and resumes with `Command(resume=...)`; review cap terminates safely without auto-finalizing
+- **Resilient MCP Capability Layer** — All external tools pass through validated contracts with schema-drift detection and graceful degradation
+- **Checkpoint Persistence** — `AsyncPostgresSaver` ensures graph runs survive complete service restarts
 
 ---
 
@@ -53,220 +55,315 @@ Most AI travel assistants suffer from three fundamental flaws:
 ```mermaid
 flowchart TB
     subgraph ClientLayer ["Client Layer"]
-        UI["Retro-Editorial Web UI<br/>(Vanilla HTML5 / CSS / Modern JS)"]
-        CLI["CLI / API Client"]
+        UI["Retro-Editorial Web UI\n(Vanilla HTML5 / CSS / JS)"]
     end
 
     subgraph FastAPILayer ["FastAPI Application Core"]
-        API["FastAPI App (/api/travel, /api/health)"]
-        Guard["Input Guardrail<br/>(Scope, Safety & Prompt Injection Check)"]
-        Pool["Application-Scoped AsyncPostgresSaver Pool"]
+        API["FastAPI App\n(/api/travel, /api/travel/resume)"]
+        Guard["Input Guardrail\n(Scope, Safety & Prompt Injection)"]
+        Pool["Application-Scoped\nAsyncPostgresSaver Pool"]
     end
 
     subgraph LangGraphCore ["LangGraph Stateful Execution Core"]
-        Supervisor["Structured Supervisor Agent<br/>(Constraint Extraction & Specialist Dispatch)"]
-
-        subgraph SpecialistSubgraph ["Specialist Subgraph (Isolated Contexts)"]
-            Flight["Flight Specialist<br/>(AviationStack MCP)"]
-            Hotel["Hotel Specialist<br/>(Tavily MCP)"]
-            Weather["Weather Specialist<br/>(OpenWeather MCP)"]
-            Budget["Budget Specialist<br/>(Cost Allocation Engine)"]
-            Itinerary["Itinerary Specialist<br/>(Schedule Coordinator)"]
+        Supervisor["Structured Supervisor\n(Constraint Extraction & Dispatch)"]
+        subgraph Specialists ["Specialist Agents"]
+            Flight["Flight\n(AviationStack MCP via uvx)"]
+            Hotel["Hotel\n(Tavily Web Search MCP)"]
+            Weather["Weather\n(OpenWeather Custom MCP)"]
+            Budget["Budget\n(Cost Allocation Engine)"]
+            Itinerary["Itinerary\n(Schedule Coordinator)"]
         end
-
-        HITL["Human Review Gate<br/>(LangGraph interrupt() / Resume Command)"]
-        Synthesis["Final Plan Synthesis<br/>(Evidence-Aware Aggregator)"]
+        HITL["Human Review Gate\n(interrupt / Command resume)"]
+        Synthesis["Final Plan Synthesis\n(Evidence-Aware Aggregator)"]
     end
 
-    subgraph ExternalServices ["MCP Capabilities & Data Providers"]
-        MCP_Flight["AviationStack API<br/>(Live Routes & Flight Status)"]
-        MCP_Hotel["Tavily Search API<br/>(Web Accommodation Data)"]
-        MCP_Weather["OpenWeather API<br/>(Current & 7-Day Forecasts)"]
-        PostgresDB[("PostgreSQL 15+<br/>(Checkpoints & Thread States)")]
+    subgraph External ["External APIs & Storage"]
+        AS["AviationStack\n(Live Routes & Status)"]
+        TV["Tavily Search\n(Hotel & Attraction Data)"]
+        OW["OpenWeather\n(Current & Forecast)"]
+        PG[("PostgreSQL 15+\n(Checkpoints & Thread States)")]
     end
 
-    UI -->|POST /api/travel| API
-    CLI -->|POST /api/travel| API
-    API --> Guard
-    Guard -->|Valid Request| Supervisor
-    Guard -->|Scope Rejection| UI
-
-    Supervisor --> Flight & Hotel & Weather & Budget
-    Flight & Hotel & Weather & Budget --> Itinerary
-    Itinerary --> HITL
-
-    HITL -->|Review Rejected / Revisions Needed| Supervisor
-    HITL -->|Approved by Traveler| Synthesis
-    Synthesis --> API
-    API --> UI
-
-    Flight -.->|Tool Contract| MCP_Flight
-    Hotel -.->|Tool Contract| MCP_Hotel
-    Weather -.->|Tool Contract| MCP_Weather
-
-    Pool <--> PostgresDB
+    UI --> API --> Guard --> Supervisor
+    Supervisor --> Flight & Hotel & Weather & Budget --> Itinerary --> HITL
+    HITL -->|Approved| Synthesis --> API --> UI
+    HITL -->|Revision| Supervisor
+    Flight -.->|MCP| AS
+    Hotel -.->|MCP| TV
+    Weather -.->|MCP| OW
+    Pool <--> PG
     LangGraphCore <--> Pool
 ```
 
 ---
 
-## 📊 The Three Evidence Layers & Scorecards
+## 🤖 LLM Architecture (v1.0.2)
 
-TripBandhu enforces correctness across three complementary testing and evaluation layers:
+TripBandhu uses **task-specific Groq models** via the `make_groq_llm` factory with `max_retries=0`:
 
-### Layer A: Versioned Benchmark Evaluation Dataset (v3.1.0)
-The benchmark suite evaluates 50 versioned test cases across 14 deterministic behavioral categories (**49/49 deterministic FAST scenarios passed**; **50/50 scenarios passed in POSTGRES mode**):
+| Task | Model | Rationale |
+| :--- | :--- | :--- |
+| Guardrail, Supervisor, Budget, Final Synthesis | `openai/gpt-oss-20b` | 12k TPM limit; structured JSON; fast |
+| Flight Summary, Itinerary, Revision | `openai/gpt-oss-120b` | Higher quality generation; 8k TPM |
 
-| Category | Fast Mode Score | Postgres Mode Score | Focus Area |
-| :--- | :---: | :---: | :--- |
-| **1. Routing & Selection** | 6 / 6 | 6 / 6 | Specialist activation and minimal routing |
-| **2. Trip Constraints** | 5 / 5 | 5 / 5 | Accurate origin, destination, budget, duration extraction |
-| **3. Input Guardrails** | 5 / 5 | 5 / 5 | Scope enforcement and prompt injection blocking |
-| **4. Capability Selection** | 5 / 5 | 5 / 5 | Explicit MCP tool permission validation |
-| **5. Evidence Semantics** | 6 / 6 | 6 / 6 | Proper classification of provider vs model estimates |
-| **6. Groundedness & Anti-Fabrication** | 4 / 4 | 4 / 4 | Zero hallucinated flight fares or phantom routes |
-| **7. Human-in-the-Loop** | 5 / 5 | 5 / 5 | Interrupt triggering, revision loops, and state preservation |
-| **8. Provider Failure Resilience** | 4 / 4 | 4 / 4 | Graceful specialist degradation upon upstream error |
-| **9. Schema Drift Handling** | 2 / 2 | 2 / 2 | Resilient normalization under tool payload drift |
-| **10. Cancellation Semantics** | 1 / 1 | 1 / 1 | Safe cycle termination without auto-finalization |
-| **11. LLM Call Accounting** | 2 / 2 | 2 / 2 | Accurate model invocation count tracking |
-| **12. Thread Isolation** | 1 / 1 | 1 / 1 | Strict state boundaries between concurrent sessions |
-| **13. Postgres Checkpoint Persistence** | Skipped | 1 / 1 | Checkpoint recovery across service/checkpointer recreation |
-| **14. Negative Controls** | 3 / 3 | 3 / 3 | Non-travel, adversarial, and edge-case rejection |
-| **TOTAL BENCHMARK SCORE** | **49 / 49 passed** | **50 / 50 passed** | *(Zero false passes; skipped cases never inflate score)* |
-
-### Layer B: Pytest Regression & Integration Suite
-- **89 Automated Tests Passed**: Complete coverage spanning input guardrails, supervisor routing, specialist contracts, MCP client lifecycle, schema drift resilience, thread isolation, and PostgreSQL checkpoint persistence.
-- **Fast Test Execution**: 88 unit and contract tests complete in under 5 seconds locally without external network dependencies.
-
-### Layer C: Live Checkpoint Restart Persistence
-- Verified end-to-end integration test (`tests/test_postgres_checkpoint_restart.py`) proving that workflow state survives complete graph/service recreation through PostgreSQL checkpoints.
+> **Why different models for different tasks?**
+> `gpt-oss-120b` has a hard 8,000 TPM limit on the Groq free tier. The final synthesis prompt (all specialist summaries + draft itinerary) exceeds this, so it uses `gpt-oss-20b` which supports 12,000 TPM.
 
 ---
 
-## 🔄 Interactive Human-in-the-Loop (HITL) Workflow
+## ⚡ Local vs Render — Why Local Run is Strongly Recommended
 
-TripBandhu prioritizes traveler agency through a structured review protocol:
+| Factor | Local Run | Render Free Tier |
+| :--- | :--- | :--- |
+| **AviationStack startup** | `uvx` cache: starts in ~1-2s | Cold-downloads MCP package on each deploy: 10-20s extra |
+| **Weather API response** | Direct network: ~1-3s | Render NAT overhead: often 20s+, hits 25s timeout |
+| **Service sleep** | Never sleeps | Spins down after 15 min; ~30-60s wake-up |
+| **MCP subprocess stability** | Stable | Container memory pressure can crash subprocesses |
+| **Timeout reliability** | Rarely triggers | Frequently triggers even with 45s client limits |
+| **Flight data** | Consistently retrieves data | May time out during cold-start window |
 
-1. **Autonomous Drafting**: Specialist agents assemble flight schedules, accommodations, weather outlooks, and budget bounds. The Itinerary Specialist compiles draft schedule `v0`.
-2. **State Suspension**: The LangGraph engine hits the `human_review` node and triggers `interrupt()`, safely returning the intermediate state to the client.
-3. **Traveler Decision**:
-   - **Approve**: Traveler accepts the itinerary. Client posts `approved=True`. Graph transitions to `final_synthesis` and produces the traveler-approved travel plan.
-   - **Request Revision**: Traveler provides textual feedback (e.g., *"Shift Hakone trip to Day 3 and find boutique hotels in Ginza"*). Client posts `approved=False` with feedback. Graph routes back to the supervisor to re-engage necessary specialists for draft `v1`.
-4. **Defensive Cap**: A strict `MAX_REVIEW_ITERATIONS` limit (default 10) prevents infinite looping. If the cap is reached without approval, the graph safely terminates with a `REVIEW_LIMIT_REACHED` notice, preserving all checkpoint history without ever auto-finalizing an unapproved plan.
-
----
-
-## 🔌 MCP Capabilities & Evidence Semantics
-
-External tools are exposed via Model Context Protocol (MCP) capability contracts with explicit data provenance:
-
-```
-Evidence Classification Model:
-├── EvidenceKind
-│   ├── PROVIDER_DATA    (AviationStack routes, OpenWeather feeds)
-│   ├── WEB_SOURCE       (Tavily hotel & attraction search results)
-│   ├── MODEL_ESTIMATE   (LLM budget allowances & recommendations)
-│   ├── DERIVED          (Calculated day-by-day totals)
-│   └── UNAVAILABLE      (Upstream provider timeout or error)
-└── EvidenceFreshness
-    ├── LIVE             (Real-time operational status / current weather)
-    ├── FORECAST         (7-day weather predictions)
-    ├── REFERENCE        (Flight schedules, airport directory listings)
-    └── UNKNOWN          (Unverified third-party content)
-```
-
-- **Schema Drift Protection**: If an upstream provider adds or alters JSON fields, the MCP Normalizer extracts verified fields safely and assigns fallback metadata without raising unhandled exceptions.
-- **Graceful Specialist Degradation**: If an external API is unavailable, the affected specialist flags its state as `DEGRADED` with a clear explanation, allowing sibling specialists and the itinerary planner to continue unimpeded.
+**TL;DR:** Run locally for reliable flight data, weather, and complete hotel results. Use Render for quick demos only.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Setup & Demo — Step by Step
 
 ### Prerequisites
-- Python 3.11+
-- Git
-- Docker & Docker Compose (optional, for containerized deployment)
 
-### 1. Local Setup (Standard Environment)
+| Tool | Version | Notes |
+| :--- | :--- | :--- |
+| Python | 3.11+ | Required |
+| PostgreSQL | 15+ | Optional — app uses in-memory if not configured |
+| `uv` (provides `uvx`) | Latest | Required for AviationStack MCP |
+| Git | Any | Clone repo |
 
 ```bash
-# Clone repository
+# Install uv (if not already installed)
+pip install uv
+```
+
+---
+
+### Step 1 — Clone & Install
+
+```bash
 git clone https://github.com/tusharg007/TripBandhu.git
 cd TripBandhu
 
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+# Windows
+python -m venv venv
+venv\Scripts\activate
 
-# Install dependencies
+# macOS / Linux
+python -m venv venv
+source venv/bin/activate
+
 pip install -r requirements.txt
-
-# Configure environment variables
-cp .env.example .env
-# Edit .env with your API keys (GROQ_API_KEY, TAVILY_API_KEY, AVIATIONSTACK_API_KEY, OPENWEATHER_API_KEY)
-
-# Start TripBandhu server
-python -m uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ```
-Open [http://localhost:8000](http://localhost:8000) in your browser.
 
 ---
 
-### 2. Docker Compose Setup (Zero-Friction Orchestration)
+### Step 2 — Configure `.env`
 
-To launch TripBandhu alongside a dedicated PostgreSQL 15 database instance:
+Create `.env` in the project root:
+
+```env
+# LLM (required)
+GROQ_API_KEY=gsk_your_groq_key_here
+
+# Specialist Data Providers (all optional — agents degrade gracefully without them)
+TAVILY_API_KEY=tvly-your_tavily_key_here
+AVIATION_STACK_API_KEY=your_aviationstack_key_here
+OPENWEATHER_API_KEY=your_openweather_key_here
+
+# PostgreSQL (optional — in-memory used if blank)
+DATABASE_URL=postgresql://postgres:your_password@localhost:5432/tripbandhu
+
+# LangSmith Observability (optional but great for debugging)
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_your_langsmith_key
+LANGSMITH_PROJECT=TripBandhu
+LANGSMITH_ENDPOINT=https://apac.api.smith.langchain.com
+```
+
+---
+
+### Step 3 — Create PostgreSQL Database (Optional)
+
+```sql
+-- In psql or pgAdmin:
+CREATE DATABASE tripbandhu;
+```
+
+---
+
+### Step 4 — Verify AviationStack MCP
 
 ```bash
-# Start container stack
-docker-compose up --build -d
+# Confirm uvx works
+uvx --version
 
-# Check service logs
-docker-compose logs -f app
+# Test AviationStack MCP starts without errors (Ctrl+C after it starts)
+uvx --with mcp==1.28.1 aviationstack-mcp==1.6.0
 ```
-The application will be available at [http://localhost:8000](http://localhost:8000).
+
+If you see a pydantic warning but no `ModuleNotFoundError` — you're good.
 
 ---
 
-## ⚙️ Configuration & Environment Variables
-
-| Variable | Required | Default | Description |
-| :--- | :---: | :---: | :--- |
-| `GROQ_API_KEY` | **Yes** | — | Primary LLM provider key (Llama 3.3 70B Versatile) |
-| `TAVILY_API_KEY` | Optional | — | Hotel and web attraction search provider |
-| `AVIATIONSTACK_API_KEY` | Optional | — | Live flight schedules and airline route data (alias: `AVIATION_STACK_API_KEY`) |
-| `OPENWEATHER_API_KEY` | Optional | — | Current weather and 7-day forecast data (alias: `OPENWEATHER_KEY`) |
-| `DATABASE_URL` | Optional | `""` | PostgreSQL connection string for `AsyncPostgresSaver` |
-| `MAX_REVIEW_ITERATIONS`| Optional | `10` | Bounded iteration cap for HITL review cycle |
-| `PORT` | Optional | `8000` | Application server port |
-
----
-
-## 🧪 Testing & Release Verification
-
-Run the full local release check and verification suite:
+### Step 5 — Start the Server
 
 ```bash
-# 1. Run complete release readiness check
-python scripts/release_check.py
+python app.py
+```
 
-# 2. Run fast pytest suite (88 unit/contract tests)
-pytest -m "not integration"
+Opens at **http://localhost:8080**
 
-# 3. Run full evaluation benchmark in FAST mode (49 cases)
+> Port conflict? Override it:
+> ```powershell
+> # Windows PowerShell
+> $env:PORT="9000"; python app.py
+>
+> # macOS / Linux
+> PORT=9000 python app.py
+> ```
+
+---
+
+### Step 6 — Demo Queries
+
+Open **http://localhost:8080** and try these in order:
+
+#### Demo A — Focused Flight Query
+```
+What flights are available from Delhi to Bangkok?
+```
+Verifies: AviationStack MCP starts correctly, route data appears in Flights tab, no fake fares.
+
+#### Demo B — Full 7-Day Budget Trip
+```
+Plan a 7-day budget trip from Delhi to Thailand for 2 people.
+Include flights, hotels, weather, and a day-by-day itinerary.
+```
+
+**Expected flow:**
+1. 5 specialist tabs fill in: Flights → Hotels → Weather → Budget → Draft Itinerary
+2. **"Review Itinerary"** section appears — read the draft
+3. Click **"Approve"** or type feedback and click **"Request Changes"**
+4. After approval → **Final Travel Plan** generates
+5. **"Copy"** for markdown export · **"Download PDF"** for PDF
+
+#### Demo C — Cultural + Budget Focus
+```
+Plan a 7-day cultural and food trip from Delhi to Japan
+with flights, hotels, weather, sightseeing, and a mid-range budget of ₹2.5 lakh.
+```
+
+#### Demo D — Focused Weather Query (no itinerary)
+```
+What is the weather like in Switzerland in late August?
+```
+Verifies: Supervisor activates only weather_agent (no itinerary gate).
+
+---
+
+### Step 7 — Running Tests
+
+```bash
+# Unit + integration tests (no external API calls)
+pytest -m "not integration" -v
+
+# Full benchmark — FAST mode (49 deterministic cases)
 python -m eval.evaluator
 
-# 4. Run full evaluation benchmark in POSTGRES mode (50 cases)
+# Full benchmark — POSTGRES mode (50 cases, requires DATABASE_URL)
 python -m eval.evaluator --postgres
 ```
 
 ---
 
-## 🔍 System Limitations & Honest Technical Trade-offs
+## ⚙️ Environment Variables Reference
 
-- **Research Assistant, Not a Booking Engine**: TripBandhu aggregates live flight schedules, status, and estimated price ranges. It does not execute live ticket bookings or credit card transactions.
-- **Provider Rate Limits**: Free-tier access to AviationStack and OpenWeather may enforce queries-per-minute limits; TripBandhu’s graceful degradation ensures the plan succeeds with fallback estimates when limits are reached.
-- **Memory Modes**: Without a configured `DATABASE_URL`, TripBandhu defaults to in-memory checkpointer storage for lightweight local execution, activating `AsyncPostgresSaver` automatically when a PostgreSQL connection string is provided.
+| Variable | Required | Default | Description |
+| :--- | :---: | :---: | :--- |
+| `GROQ_API_KEY` | **Yes** | — | Groq API key |
+| `TAVILY_API_KEY` | Optional | — | Hotel & web search |
+| `AVIATION_STACK_API_KEY` | Optional | — | Live flight routes (also accepted as `AVIATIONSTACK_API_KEY`) |
+| `OPENWEATHER_API_KEY` | Optional | — | Weather data |
+| `DATABASE_URL` | Optional | `""` | PostgreSQL connection string |
+| `PORT` | Optional | `8080` | Server port (Render sets this automatically) |
+| `MAX_REVIEW_ITERATIONS` | Optional | `10` | Max HITL revision cycles |
+| `LANGSMITH_TRACING` | Optional | `false` | Enable LangSmith tracing |
+| `LANGSMITH_API_KEY` | Optional | — | LangSmith API key |
+| `LANGSMITH_PROJECT` | Optional | `TripBandhu` | LangSmith project name |
+
+> **Free-tier limits:**
+> - Groq `gpt-oss-120b`: 8,000 TPM hard limit
+> - Groq `gpt-oss-20b`: 12,000 TPM hard limit
+> - AviationStack free: 100 API calls/month
+> - OpenWeather free: 60 calls/minute
+
+---
+
+## 🔄 Human-in-the-Loop Workflow
+
+```
+User Query
+    │
+    ▼
+[Guardrail] ── blocked ──► "Out of scope" response
+    │ allowed
+    ▼
+[Supervisor] extracts trip constraints
+    │
+    ├──► [Flight Agent]    → AviationStack MCP
+    ├──► [Hotel Agent]     → Tavily web search
+    ├──► [Weather Agent]   → OpenWeather MCP
+    └──► [Budget Agent]    → LLM cost estimation
+    │
+    ▼
+[Itinerary Agent] assembles draft plan
+    │
+    ▼
+[Human Review Gate] ──interrupt()──► UI shows draft to traveler
+    │
+    ├── Approve ────────────────────► [Final Synthesis] → Final plan shown
+    │
+    └── Revision + feedback
+              │
+              ▼
+         [Revision Agent] refines draft
+              │
+              ▼
+         [Human Review Gate] again (up to MAX_REVIEW_ITERATIONS)
+              │
+              └── Cap reached ──► Safe termination, no auto-finalization
+```
+
+---
+
+## 📊 Evaluation Results (v1.0.2)
+
+| Suite | Result |
+| :--- | :--- |
+| Pytest regression (118 tests) | ✅ 118 / 118 passed |
+| Benchmark FAST mode (49 cases) | ✅ 49 / 49 passed |
+| Benchmark POSTGRES mode (50 cases) | ✅ 50 / 50 passed |
+| Live HITL validation on Render | ✅ Passed |
+
+---
+
+## 🛠️ Troubleshooting
+
+| Error | Cause | Fix |
+| :--- | :--- | :--- |
+| `[WinError 10013]` on startup | Port in use (Docker Desktop uses 8000) | Set `$env:PORT="9000"` |
+| `ModuleNotFoundError: mcp.server.fastmcp` | Old uvx cache / wrong mcp version | Fixed in v1.0.2 via `--with mcp==1.28.1` in uvx args |
+| `413 Request too large` | Groq TPM limit exceeded | Fixed in v1.0.2 — final synthesis uses `gpt-oss-20b` |
+| Flights always "unavailable" | AviationStack key missing or uvx crash | Check `AVIATION_STACK_API_KEY` in `.env`; test uvx manually |
+| Weather shows raw JSON | MCP envelope not unwrapped | Fixed in v1.0.2 — `_unwrap_mcp()` applied to weather normalizer |
+| Final plan: "could not be generated" | Groq rate limit / TPM exceeded | Wait 1 min (TPM reset) then retry |
+| PDF has blank pages / cut content | html2canvas scroll offset or shadow bleed | Known issue — use "Copy" button for now |
 
 ---
 
@@ -274,46 +371,33 @@ python -m eval.evaluator --postgres
 
 ```
 TripBandhu/
-├── .github/
-│   └── workflows/
-│       └── ci.yml                 # Multi-job GitHub Actions CI (Fast, Postgres, Docker)
-├── agent/                         # Multi-Agent LangGraph Core
-│   ├── graph.py                   # Graph construction, nodes, edges, state reducers
-│   ├── supervisor.py              # Structured supervisor & constraint extraction
-│   ├── specialists.py             # Domain specialists (Flights, Hotels, Weather, Budget, Itinerary)
-│   ├── guardrail.py               # Input validation, safety, scope verification
-│   ├── mcp_tools.py               # MCP client lifecycle & tool execution
-│   └── mcp_normalizer.py          # Typed evidence normalization & schema drift handling
-├── eval/                          # Quantitative Evaluation & Observability
-│   ├── eval_dataset.py            # 50-case versioned evaluation dataset (v3.1.0)
-│   ├── evaluator.py               # Benchmark execution harness (FAST / POSTGRES modes)
-│   └── trace_observability.py     # Execution tracing, latency, LLM call accounting
-├── docs/                          # Architecture & Portfolio Assets
-│   ├── architecture/
-│   │   └── FINAL_ARCHITECTURE.md  # Detailed system architecture specification
-│   └── assets/portfolio/          # High-resolution UI screenshots (2x DPR)
-├── static/                        # Frontend Application
-│   ├── index.html                 # Semantic retro-editorial layout
-│   ├── styles.css                 # Custom design tokens, typography, responsive rules
-│   └── script.js                  # Stateful frontend logic & HITL interaction
-├── tests/                         # Pytest Automated Test Suite
-│   ├── test_guardrail.py          # Input guardrail validation tests
-│   ├── test_supervisor.py         # Routing and constraint extraction tests
-│   ├── test_specialists.py        # Specialist execution and degradation tests
-│   ├── test_mcp_contracts.py      # MCP capability contracts and drift tests
-│   ├── test_evaluation_harness.py # Benchmark evaluator regression tests
-│   └── test_postgres_checkpoint_restart.py # PostgreSQL restart persistence tests
-├── scripts/
-│   └── release_check.py           # Automated local release readiness gate
-├── app.py                         # FastAPI server initialization & endpoints
-├── docker-compose.yml             # Local multi-container Docker Compose definition
-├── Dockerfile                     # Container build manifest
-├── requirements.txt               # Python package dependencies
-└── README.md                      # Canonical project documentation
+├── .github/workflows/ci.yml          # GitHub Actions CI
+├── eval/
+│   ├── eval_dataset.py               # 50-case benchmark dataset (v3.1.0)
+│   └── evaluator.py                  # FAST / POSTGRES benchmark harness
+├── tests/                            # Pytest suite (118 tests)
+├── docs/assets/portfolio/            # UI screenshots
+├── static/
+│   ├── script.js                     # Frontend logic, HITL, PDF export
+│   └── style.css                     # Retro-editorial design system
+├── templates/index.html              # Single-page app shell
+├── app.py                            # FastAPI server & endpoints
+├── backend.py                        # LangGraph graph + all agent functions
+├── mcp_client.py                     # MCP server configs & tool adapters
+├── capability_registry.py            # Evidence normalizers (Tavily, Weather, Flight)
+├── provider_utils.py                 # Async MCP call wrapper (timeout + retry)
+├── agent_config.py                   # Timeouts, token budgets, model assignments
+├── llm_utils.py                      # LLM invocation with rate-limit handling
+├── schemas.py                        # Typed evidence, error codes, state schemas
+├── custom_weather_mcp_server.py      # OpenWeather MCP server (FastMCP stdio)
+├── project_config.py                 # Path resolution
+├── requirements.txt
+├── .env.example
+└── README.md
 ```
 
 ---
 
 ## 📄 License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+MIT License — see [LICENSE](LICENSE) for details.
