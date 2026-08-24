@@ -6,19 +6,38 @@ dependency validation, forbidden string checks, and secret hygiene.
 
 from __future__ import annotations
 
-import compileall
 import os
 import pathlib
+import py_compile
 import re
 import subprocess
 import sys
 
+# Release checks must not export traces from a developer's local .env file.
+os.environ["LANGSMITH_TRACING"] = "false"
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
+
 _FORBIDDEN_TARGET = bytes.fromhex("61746c616e").decode("ascii")
+
+_IGNORED_DIRECTORIES = {
+    ".git",
+    ".pytest_cache",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+}
 
 _SENSITIVE_PATTERNS = [
     re.compile(r"gsk_[a-zA-Z0-9_\-]{28,}", re.IGNORECASE),
     re.compile(r"tvly-[a-zA-Z0-9_\-]{28,}", re.IGNORECASE),
 ]
+
+
+def is_ignored_path(path: pathlib.Path, root: pathlib.Path) -> bool:
+    """Return True for generated or third-party directories outside release scope."""
+    relative_parts = path.relative_to(root).parts
+    return any(part.lower() in _IGNORED_DIRECTORIES for part in relative_parts)
 
 
 def run_step(step_name: str, fn) -> bool:
@@ -34,9 +53,17 @@ def run_step(step_name: str, fn) -> bool:
 
 def check_compilation():
     root = pathlib.Path(__file__).parent.parent
-    success = compileall.compile_dir(str(root), quiet=1, force=False)
-    if not success:
-        raise RuntimeError("Bytecode compilation failed on some files.")
+    for current_dir, directory_names, file_names in os.walk(root):
+        directory_names[:] = [
+            name for name in directory_names
+            if name.lower() not in _IGNORED_DIRECTORIES
+        ]
+        for file_name in file_names:
+            if file_name.endswith(".py"):
+                py_compile.compile(
+                    str(pathlib.Path(current_dir) / file_name),
+                    doraise=True,
+                )
 
 
 def check_dependencies():
@@ -50,7 +77,7 @@ def check_forbidden_name():
     scanned_exts = {".py", ".md", ".json", ".html", ".css", ".js", ".yml", ".yaml", ".txt"}
     for path in root.rglob("*"):
         if path.is_file() and path.suffix.lower() in scanned_exts:
-            if ".git" in path.parts or ".pytest_cache" in path.parts or "node_modules" in path.parts or path.name == "release_check.py":
+            if is_ignored_path(path, root) or path.name == "release_check.py":
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
             if _FORBIDDEN_TARGET in text.lower():
@@ -62,7 +89,7 @@ def check_secret_hygiene():
     scanned_exts = {".py", ".md", ".json", ".html", ".css", ".js", ".yml", ".yaml"}
     for path in root.rglob("*"):
         if path.is_file() and path.suffix.lower() in scanned_exts:
-            if ".git" in path.parts or ".pytest_cache" in path.parts or "node_modules" in path.parts or "eval_dataset.py" in path.parts or path.name.startswith("test_"):
+            if is_ignored_path(path, root) or "eval_dataset.py" in path.parts or path.name.startswith("test_"):
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
             for pattern in _SENSITIVE_PATTERNS:

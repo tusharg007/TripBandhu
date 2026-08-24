@@ -24,6 +24,8 @@ class ReleaseSafetyTest(unittest.TestCase):
 
         self.assertIn("uv==0.8.13", dockerfile)
         self.assertIn("uvx --version", dockerfile)
+        self.assertIn("EXPOSE 8080", dockerfile)
+        self.assertIn("${PORT:-8080}", dockerfile)
 
     def test_frontend_contains_hitl_and_sanitized_markdown_paths(self):
         template = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")

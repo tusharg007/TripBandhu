@@ -179,11 +179,11 @@ OPENWEATHER_API_KEY=your_openweather_key_here
 # PostgreSQL (optional — in-memory used if blank)
 DATABASE_URL=postgresql://postgres:your_password@localhost:5432/tripbandhu
 
-# LangSmith Observability (optional but great for debugging)
-LANGSMITH_TRACING=true
+# LangSmith Observability (optional; enable only after verifying the key/region)
+LANGSMITH_TRACING=false
 LANGSMITH_API_KEY=lsv2_your_langsmith_key
 LANGSMITH_PROJECT=TripBandhu
-LANGSMITH_ENDPOINT=https://apac.api.smith.langchain.com
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 ```
 
 ---
@@ -270,7 +270,10 @@ Verifies: Supervisor activates only weather_agent (no itinerary gate).
 ### Step 7 — Running Tests
 
 ```bash
-# Unit + integration tests (no external API calls)
+# Install the CI-pinned development test dependencies
+pip install -r requirements-dev.txt
+
+# Fast unit and contract tests (no external API calls)
 pytest -m "not integration" -v
 
 # Full benchmark — FAST mode (49 deterministic cases)
@@ -346,7 +349,7 @@ User Query
 
 | Suite | Result |
 | :--- | :--- |
-| Pytest regression (118 tests) | ✅ 118 / 118 passed |
+| Pytest regression | ✅ 117 fast + 1 PostgreSQL integration test |
 | Benchmark FAST mode (49 cases) | ✅ 49 / 49 passed |
 | Benchmark POSTGRES mode (50 cases) | ✅ 50 / 50 passed |
 | Live HITL validation on Render | ✅ Passed |
@@ -357,13 +360,14 @@ User Query
 
 | Error | Cause | Fix |
 | :--- | :--- | :--- |
-| `[WinError 10013]` on startup | Port in use (Docker Desktop uses 8000) | Set `$env:PORT="9000"` |
+| `[WinError 10013]` on startup | The selected port is already in use | Set `$env:PORT="9000"` |
 | `ModuleNotFoundError: mcp.server.fastmcp` | Old uvx cache / wrong mcp version | Fixed in v1.0.2 via `--with mcp==1.28.1` in uvx args |
 | `413 Request too large` | Groq TPM limit exceeded | Fixed in v1.0.2 — final synthesis uses `gpt-oss-20b` |
 | Flights always "unavailable" | AviationStack key missing or uvx crash | Check `AVIATION_STACK_API_KEY` in `.env`; test uvx manually |
 | Weather shows raw JSON | MCP envelope not unwrapped | Fixed in v1.0.2 — `_unwrap_mcp()` applied to weather normalizer |
 | Final plan: "could not be generated" | Groq rate limit / TPM exceeded | Wait 1 min (TPM reset) then retry |
-| PDF has blank pages / cut content | html2canvas scroll offset or shadow bleed | Known issue — use "Copy" button for now |
+| LangSmith `403 Forbidden` or multipart ingest failures | Tracing key, workspace, or regional endpoint does not match | Keep `LANGSMITH_TRACING=false`, or configure the endpoint/workspace for the key before enabling tracing |
+| Browser still shows an older UI/PDF behavior | Cached static assets from an earlier deploy | Hard-refresh the page; deployed assets are commit-versioned |
 
 ---
 
@@ -375,7 +379,7 @@ TripBandhu/
 ├── eval/
 │   ├── eval_dataset.py               # 50-case benchmark dataset (v3.1.0)
 │   └── evaluator.py                  # FAST / POSTGRES benchmark harness
-├── tests/                            # Pytest suite (118 tests)
+├── tests/                            # 117 fast tests + PostgreSQL integration test
 ├── docs/assets/portfolio/            # UI screenshots
 ├── static/
 │   ├── script.js                     # Frontend logic, HITL, PDF export
@@ -392,6 +396,7 @@ TripBandhu/
 ├── custom_weather_mcp_server.py      # OpenWeather MCP server (FastMCP stdio)
 ├── project_config.py                 # Path resolution
 ├── requirements.txt
+├── requirements-dev.txt              # CI-pinned test dependencies
 ├── .env.example
 └── README.md
 ```
