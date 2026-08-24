@@ -395,8 +395,17 @@ function copyResult() {
 }
 
 function downloadPDF() {
-    if (!latestAnswerMarkdown) {
-        showError("No final travel plan is available to download.");
+    // Primary source: in-memory markdown from the last API response.
+    // Fallback: read plaintext from the rendered result box (survives page refresh
+    // but loses markdown formatting — still produces a valid readable PDF).
+    let content = latestAnswerMarkdown;
+    if (!content) {
+        const resultBox = byId("resultBox");
+        content = resultBox ? (resultBox.innerText || "").trim() : "";
+    }
+
+    if (!content) {
+        alert("No final travel plan is available to download yet.\nPlease run a trip query first.");
         return;
     }
 
@@ -405,22 +414,23 @@ function downloadPDF() {
     downloadBtn.textContent = "Preparing PDF…";
     downloadBtn.disabled = true;
 
-    // Extract a title from the first heading in the markdown, fall back to generic
-    const titleMatch = latestAnswerMarkdown.match(/^#+ (.+)/m);
+    const titleMatch = content.match(/^#+ (.+)/m);
     const title = titleMatch ? titleMatch[1].trim() : "TripBandhu Travel Plan";
 
-    // POST plain markdown text to the server — reportlab renders a clean A4 PDF.
-    // No html2canvas, no browser rendering, no CSS shadow bleed, no blank pages.
+    console.log("[PDF] Sending", content.length, "chars to server, title:", title);
+
     fetch("/api/travel/download-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: latestAnswerMarkdown, title }),
+        body: JSON.stringify({ text: content, title }),
     })
         .then((res) => {
+            console.log("[PDF] Server response status:", res.status);
             if (!res.ok) throw new Error(`Server returned ${res.status}`);
             return res.blob();
         })
         .then((blob) => {
+            console.log("[PDF] Blob received, size:", blob.size);
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
@@ -430,8 +440,9 @@ function downloadPDF() {
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
         })
-        .catch(() => {
-            showError("Could not download PDF. Please try the Copy button instead.");
+        .catch((err) => {
+            console.error("[PDF] Download failed:", err);
+            showError("Could not download PDF — check console for details.");
         })
         .finally(() => {
             downloadBtn.textContent = oldText;
