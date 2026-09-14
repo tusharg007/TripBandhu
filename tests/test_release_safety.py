@@ -74,6 +74,7 @@ class ReleaseSafetyTest(unittest.TestCase):
         import os
         from fastapi.testclient import TestClient
         from app import app
+        from deployment_info import get_asset_version
 
         template = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn('/static/style.css?v={{ asset_version }}', template)
@@ -87,8 +88,9 @@ class ReleaseSafetyTest(unittest.TestCase):
         res = client.get("/")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.headers.get("cache-control"), "no-cache")
-        self.assertIn('/static/style.css?v=dev', res.text)
-        self.assertIn('/static/script.js?v=dev', res.text)
+        local_asset_version = get_asset_version()
+        self.assertIn(f'/static/style.css?v={local_asset_version}', res.text)
+        self.assertIn(f'/static/script.js?v={local_asset_version}', res.text)
 
         # 2. Production RENDER_GIT_COMMIT injection
         os.environ["RENDER_GIT_COMMIT"] = "abcdef123456789xyz"

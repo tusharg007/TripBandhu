@@ -1,0 +1,37 @@
+name: TripBandhu Deployment Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Public TripBandhu URL
+        required: true
+        default: https://tripbandhu.onrender.com
+      expected_sha:
+        description: Expected deployed commit (defaults to this workflow commit)
+        required: false
+        default: ""
+
+jobs:
+  verify-public-deployment:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout selected revision
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify build, assets, and PDF renderer
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          REQUESTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          EXPECTED_SHA="${REQUESTED_SHA:-$GITHUB_SHA}"
+          python scripts/deployment_smoke.py \
+            --base-url "$BASE_URL" \
+            --expected-sha "$EXPECTED_SHA"

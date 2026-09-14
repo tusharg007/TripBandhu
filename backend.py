@@ -73,6 +73,7 @@ from provider_utils import async_call_provider
 from llm_utils import invoke_llm, invoke_llm_complete_text, merge_token_usage
 from location_utils import normalize_weather_location
 from tools.flight_tool import DEFAULT_ORIGIN_IATA, resolve_location_to_iata
+from deployment_info import APP_VERSION, PROVIDER_CONFIG_VERSION, get_build_sha
 
 
 def get_database_url() -> str | None:
@@ -1353,7 +1354,15 @@ class TravelAgentService:
     async def run(self, user_input: str, thread_id: str | None = None) -> dict[str, Any]:
         if not thread_id:
             thread_id = f"user_{uuid.uuid4().hex}"
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "metadata": {
+                "app_version": APP_VERSION,
+                "build_sha": get_build_sha(),
+                "provider_config_version": PROVIDER_CONFIG_VERSION,
+                "provider_timeouts_seconds": dict(PROVIDER_TIMEOUT_SECONDS),
+            },
+        }
         result = await self.graph.ainvoke(
             {
                 "messages": [HumanMessage(content=user_input)],
@@ -1392,7 +1401,15 @@ class TravelAgentService:
     async def resume(self, thread_id: str, approved: bool, feedback: str = "") -> dict[str, Any]:
         if not thread_id:
             raise ValueError("thread_id is required to resume a travel plan.")
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "metadata": {
+                "app_version": APP_VERSION,
+                "build_sha": get_build_sha(),
+                "provider_config_version": PROVIDER_CONFIG_VERSION,
+                "provider_timeouts_seconds": dict(PROVIDER_TIMEOUT_SECONDS),
+            },
+        }
         result = await self.graph.ainvoke(
             Command(
                 resume={

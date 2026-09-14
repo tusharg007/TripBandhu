@@ -21,6 +21,7 @@ from project_config import PROJECT_ROOT
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from pdf_generator import PdfContentError, build_itinerary_pdf
+from deployment_info import APP_VERSION, get_asset_version, get_build_sha, get_deployment_info
 
 
 BASE_DIR = PROJECT_ROOT
@@ -61,9 +62,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="TripBandhu - AI Travel Planner",
     description="LangGraph Multi-Agent Travel Planner with FastAPI Frontend",
-    version="1.0.2",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def add_build_identity_header(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-TripBandhu-Build"] = get_build_sha()
+    return response
 
 
 app.mount(
@@ -134,7 +142,7 @@ def public_error(code: str, message: str, status_code: int = 500) -> JSONRespons
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    asset_version = (os.getenv("RENDER_GIT_COMMIT") or "dev")[:12]
+    asset_version = get_asset_version()
     response = templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -261,6 +269,15 @@ async def health_check():
         "status": "ok",
         "message": "AI Travel Planner API is running",
     }
+
+
+@app.get("/version")
+async def version_info():
+    """Expose non-secret build identity for release and deployment checks."""
+    return JSONResponse(
+        content=get_deployment_info(),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/favicon.ico")

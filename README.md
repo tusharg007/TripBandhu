@@ -9,8 +9,19 @@
 [![Groq](https://img.shields.io/badge/Groq-GPT--OSS%2020B%20%2F%20120B-F55036?style=for-the-badge)](https://console.groq.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4B942?style=for-the-badge)](LICENSE)
 
-> **Latest release:** `v1.0.2` — GPT-OSS Migration & Runtime Reliability
+> **Latest release:** `v1.0.3` — Deployment Identity & Export Verification
+>
 > **Live demo:** [https://tripbandhu.onrender.com](https://tripbandhu.onrender.com) *(free tier — cold starts; local run is recommended)*
+
+Deployment identity is available at [`/version`](https://tripbandhu.onrender.com/version). After a Render deploy, verify the public build, versioned assets, and server-side PDF renderer with:
+
+```bash
+python scripts/deployment_smoke.py \
+  --base-url https://tripbandhu.onrender.com \
+  --expected-sha <deployed-git-sha>
+```
+
+The same check can be run manually from the **TripBandhu Deployment Smoke** GitHub Actions workflow.
 
 ---
 

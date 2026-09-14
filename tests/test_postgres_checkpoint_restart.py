@@ -10,6 +10,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from psycopg import OperationalError
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -197,7 +198,13 @@ class TestPostgresCheckpointRestartPersistence:
     def test_postgres_checkpoint_survives_service_recreation(self):
         """Prove that state/interrupts persist across full service & checkpointer disposals."""
         db_url = _get_integration_db_url()
-        asyncio.run(execute_postgres_checkpoint_restart_flow(db_url))
+        try:
+            asyncio.run(execute_postgres_checkpoint_restart_flow(db_url))
+        except OperationalError:
+            pytest.fail(
+                "PostgreSQL integration database could not be reached; verify its status and TEST_DATABASE_URL.",
+                pytrace=False,
+            )
 
 
 if __name__ == "__main__":
