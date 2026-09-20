@@ -15,6 +15,7 @@ from typing import Any, TypedDict, Annotated, Optional
 import operator
 import uuid
 import asyncio
+import json
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
@@ -72,7 +73,7 @@ from agent_config import (
 from provider_utils import async_call_provider
 from llm_utils import invoke_llm, invoke_llm_complete_text, merge_token_usage
 from location_utils import normalize_weather_location
-from tools.flight_tool import DEFAULT_ORIGIN_IATA, resolve_location_to_iata
+from tools.flight_tool import DEFAULT_ORIGIN_IATA, get_airport_reference, resolve_location_to_iata
 from deployment_info import APP_VERSION, PROVIDER_CONFIG_VERSION, get_build_sha
 
 
@@ -258,7 +259,11 @@ async def supervisor_agent(state: TravelState):
         allowed = gd.allowed
         guardrail_reason = gd.reason
     except Exception as exc:
-        print(f"[supervisor] Guardrail structured output failed, using keyword fallback: {exc}", flush=True)
+        print(
+            f"[supervisor] Guardrail structured output failed; using keyword fallback "
+            f"(type={type(exc).__name__}).",
+            flush=True,
+        )
         gd_fallback = _deterministic_travel_check(query)
         allowed = gd_fallback.allowed
         guardrail_reason = gd_fallback.reason
@@ -326,7 +331,11 @@ async def supervisor_agent(state: TravelState):
         reasoning = decision.reasoning.strip()
 
     except Exception as exc:
-        print(f"[supervisor] Structured output failed, using safe defaults: {exc}", flush=True)
+        print(
+            f"[supervisor] Structured output failed; using safe defaults "
+            f"(type={type(exc).__name__}).",
+            flush=True,
+        )
         selected_agents = AGENT_ORDER.copy()
         constraints = _empty_constraints()
         reasoning = (
@@ -368,12 +377,49 @@ async def guardrail_blocked_agent(state: TravelState):
 # =========================
 # Flight Agent — TF2 Route-Specific Capability & Evidence Normalization
 # =========================
+def _provider_payload(value: Any) -> Any:
+    """Unwrap the small MCP text envelope used by compatibility-mode tests/tools."""
+    if isinstance(value, list):
+        text_parts = [
+            str(item.get("text") or "")
+            for item in value
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        if text_parts:
+            try:
+                return json.loads(" ".join(text_parts))
+            except json.JSONDecodeError:
+                return " ".join(text_parts)
+    return value
+
+
+def _count_provider_records(value: Any) -> int:
+    payload = _provider_payload(value)
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        return len(payload["data"])
+    if isinstance(payload, list):
+        return len(payload)
+    return 1 if payload else 0
+
+
+def _count_current_weather(value: Any) -> int:
+    payload = _provider_payload(value)
+    return 1 if isinstance(payload, dict) and payload.get("temperature_c") is not None else (1 if payload else 0)
+
+
+def _count_forecast_days(value: Any) -> int:
+    payload = _provider_payload(value)
+    if isinstance(payload, dict) and isinstance(payload.get("forecast"), list):
+        return len(payload["forecast"])
+    return 1 if payload else 0
+
+
 FLIGHT_AGENT_PROMPT = (
     "You are a travel flight expert.\n\n"
     "User Query:\n{query}\n\n"
     "Origin: {origin}\n"
     "Destination: {destination}\n\n"
-    "Flight & Route Evidence (from AviationStack MCP):\n{flight_evidence}\n\n"
+    "Flight & Route Evidence (from AviationStack):\n{flight_evidence}\n\n"
     "Generate a structured flight summary:\n"
     "1. Likely departure airport(s)\n"
     "2. Likely arrival airport(s)\n"
@@ -382,7 +428,9 @@ FLIGHT_AGENT_PROMPT = (
     "5. Estimated airfare range (MUST be explicitly marked as: '[MODEL ESTIMATE - Not Live Fare]')\n"
     "6. Booking and seasonal advice\n\n"
     "CRITICAL PRICING TRUTH:\n"
+    "- AviationStack records are observed flight-status data, not future availability or a booking result.\n"
     "- AviationStack does not provide live ticket pricing. NEVER claim live airfare was verified.\n"
+    "- Do not present observed departure times, gates, terminals, or status as the user's future schedule.\n"
     "- Any dollar/rupee amount must be labeled: 'MODEL ESTIMATE - Verify live fares with airlines.'\n"
     "Return concise, professional flight intelligence."
 )
@@ -420,38 +468,13 @@ async def flight_agent(state: TravelState):
         capability="FLIGHT_ROUTE_SEARCH",
         server="aviationstack",
         tool_name="list_routes",
+        source_count_fn=_count_provider_records,
     )
     if getattr(routes_result, "trace_entry", None):
         routes_result.trace_entry.sequence = len(trace) + 1
         trace.append(routes_result.trace_entry.model_dump())
 
-    airports_result = await async_call_provider(
-        lambda: aviation_mcp_call("list_airports"),
-        provider_name="aviation",
-        safe_failure_message=FLIGHT_UNAVAILABLE_MESSAGE,
-        specialist="flight_agent",
-        capability="AIRPORT_LOOKUP",
-        server="aviationstack",
-        tool_name="list_airports",
-    )
-    if getattr(airports_result, "trace_entry", None):
-        airports_result.trace_entry.sequence = len(trace) + 1
-        trace.append(airports_result.trace_entry.model_dump())
-
-    airlines_result = await async_call_provider(
-        lambda: aviation_mcp_call("list_airlines"),
-        provider_name="aviation",
-        safe_failure_message=FLIGHT_UNAVAILABLE_MESSAGE,
-        specialist="flight_agent",
-        capability="AIRLINE_LOOKUP",
-        server="aviationstack",
-        tool_name="list_airlines",
-    )
-    if getattr(airlines_result, "trace_entry", None):
-        airlines_result.trace_entry.sequence = len(trace) + 1
-        trace.append(airlines_result.trace_entry.model_dump())
-
-    if not (routes_result.success or airports_result.success or airlines_result.success):
+    if not routes_result.success:
         statuses["flight_agent"] = "DEGRADED"
         ev_unavailable = CapabilityEvidence(
             capability="FLIGHT_ROUTE_SEARCH",
@@ -476,9 +499,16 @@ async def flight_agent(state: TravelState):
         }
 
     flight_ev = normalize_flight_results(
-        routes_data=routes_result.data if routes_result.success else None,
-        airports_data=airports_result.data if airports_result.success else None,
-        airlines_data=airlines_result.data if airlines_result.success else None,
+        routes_data=routes_result.data,
+        airports_data=[
+            airport
+            for airport in (
+                get_airport_reference(origin_iata),
+                get_airport_reference(destination_iata),
+            )
+            if airport
+        ],
+        airlines_data=None,
         destination=dest,
         origin=orig,
         latency_ms=routes_result.latency_ms,
@@ -513,7 +543,7 @@ async def flight_agent(state: TravelState):
             "llm_token_usage": llm_token_usage,
         }
     except Exception as exc:
-        print(f"[flight_agent] LLM call failed: {type(exc).__name__}: {exc}", flush=True)
+        print(f"[flight_agent] LLM call failed (type={type(exc).__name__}).", flush=True)
         statuses["flight_agent"] = "DEGRADED"
         return {
             "flight_results": FLIGHT_UNAVAILABLE_MESSAGE,
@@ -567,12 +597,20 @@ async def hotel_agent(state: TravelState):
         server="tavily",
         tool_name="tavily_search",
     )
-    if getattr(result, "trace_entry", None):
-        result.trace_entry.sequence = len(trace) + 1
-        trace.append(result.trace_entry.model_dump())
-
     if result.success:
-        hotel_ev = normalize_tavily_results(result.data, query, latency_ms=result.latency_ms)
+        hotel_ev = normalize_tavily_results(
+            result.data,
+            query,
+            latency_ms=result.latency_ms,
+            destination=destination,
+        )
+        if getattr(result, "trace_entry", None):
+            result.trace_entry.sequence = len(trace) + 1
+            result.trace_entry.source_count = len(hotel_ev.sources)
+            result.trace_entry.status = hotel_ev.status.value
+            if not hotel_ev.data:
+                result.trace_entry.error_code = ErrorCode.INVALID_RESPONSE.value
+            trace.append(result.trace_entry.model_dump())
         evidence_store["HOTEL_WEB_RESEARCH"] = hotel_ev.model_dump()
 
         if not hotel_ev.data:
@@ -606,7 +644,7 @@ async def hotel_agent(state: TravelState):
             llm_token_usage = merge_token_usage(llm_token_usage, tokens)
             statuses["hotel_agent"] = "COMPLETED"
         except Exception as exc:
-            print(f"[hotel_agent] Presentation LLM failed: {type(exc).__name__}: {exc}", flush=True)
+            print(f"[hotel_agent] Presentation LLM failed (type={type(exc).__name__}).", flush=True)
             hotel_text = hotel_ev.summary
             statuses["hotel_agent"] = "DEGRADED"
 
@@ -621,6 +659,9 @@ async def hotel_agent(state: TravelState):
             "llm_token_usage": llm_token_usage,
         }
     else:
+        if getattr(result, "trace_entry", None):
+            result.trace_entry.sequence = len(trace) + 1
+            trace.append(result.trace_entry.model_dump())
         statuses["hotel_agent"] = "DEGRADED"
         hotel_failure_message = (
             HOTEL_RATE_LIMIT_MESSAGE
@@ -698,33 +739,39 @@ async def weather_agent(state: TravelState):
                 city = await extract_destination_async(state["user_query"])
             llm_calls += 1
         except Exception as exc:
-            print(f"[weather_agent] Destination extraction failed: {exc}", flush=True)
+            print(
+                f"[weather_agent] Destination extraction failed (type={type(exc).__name__}).",
+                flush=True,
+            )
             city = "your destination"
 
     city = normalize_weather_location(city) or "your destination"
 
-    weather_result = await async_call_provider(
-        lambda: weather_mcp_search(city),
-        provider_name="weather",
-        safe_failure_message=WEATHER_UNAVAILABLE_MESSAGE,
-        specialist="weather_agent",
-        capability="WEATHER_CURRENT",
-        server="weather",
-        tool_name="get_current_weather",
+    weather_result, forecast_result = await asyncio.gather(
+        async_call_provider(
+            lambda: weather_mcp_search(city),
+            provider_name="weather",
+            safe_failure_message=WEATHER_UNAVAILABLE_MESSAGE,
+            specialist="weather_agent",
+            capability="WEATHER_CURRENT",
+            server="weather",
+            tool_name="get_current_weather",
+            source_count_fn=_count_current_weather,
+        ),
+        async_call_provider(
+            lambda: forecast_mcp_search(city),
+            provider_name="weather",
+            safe_failure_message=WEATHER_UNAVAILABLE_MESSAGE,
+            specialist="weather_agent",
+            capability="WEATHER_FORECAST",
+            server="weather",
+            tool_name="get_forecast",
+            source_count_fn=_count_forecast_days,
+        ),
     )
     if getattr(weather_result, "trace_entry", None):
         weather_result.trace_entry.sequence = len(trace) + 1
         trace.append(weather_result.trace_entry.model_dump())
-
-    forecast_result = await async_call_provider(
-        lambda: forecast_mcp_search(city),
-        provider_name="weather",
-        safe_failure_message=WEATHER_UNAVAILABLE_MESSAGE,
-        specialist="weather_agent",
-        capability="WEATHER_FORECAST",
-        server="weather",
-        tool_name="get_forecast",
-    )
     if getattr(forecast_result, "trace_entry", None):
         forecast_result.trace_entry.sequence = len(trace) + 1
         trace.append(forecast_result.trace_entry.model_dump())
@@ -765,7 +812,7 @@ async def weather_agent(state: TravelState):
                 )
                 weather_text = weather_ev.summary
         except Exception as exc:
-            print(f"[weather_agent] Presentation LLM failed: {type(exc).__name__}: {exc}", flush=True)
+            print(f"[weather_agent] Presentation LLM failed (type={type(exc).__name__}).", flush=True)
             weather_text = weather_ev.summary
             statuses["weather_agent"] = "DEGRADED"
 
@@ -866,7 +913,7 @@ async def budget_agent(state: TravelState):
             "llm_token_usage": llm_token_usage,
         }
     except Exception as exc:
-        print(f"[budget_agent] LLM call failed: {exc}", flush=True)
+        print(f"[budget_agent] LLM call failed (type={type(exc).__name__}).", flush=True)
         statuses["budget_agent"] = "DEGRADED"
         return {
             "budget_results": "Budget estimation could not be generated.",
@@ -928,7 +975,7 @@ async def itinerary_agent(state: TravelState):
             "final polished plan, or provide feedback for revision."
         )
     except Exception as exc:
-        print(f"[itinerary_agent] LLM call failed: {exc}", flush=True)
+        print(f"[itinerary_agent] LLM call failed (type={type(exc).__name__}).", flush=True)
         statuses["itinerary_agent"] = "DEGRADED"
         itinerary_content = _ITINERARY_FAILURE_SENTINEL
         llm_calls = state.get("llm_calls", 0)
@@ -991,7 +1038,10 @@ async def itinerary_revision_agent(state: TravelState):
             "Please review and approve, or provide further feedback."
         )
     except Exception as exc:
-        print(f"[itinerary_revision_agent] LLM call failed: {exc}", flush=True)
+        print(
+            f"[itinerary_revision_agent] LLM call failed (type={type(exc).__name__}).",
+            flush=True,
+        )
         statuses["itinerary_agent"] = "DEGRADED"
         revised_itinerary = state.get("itinerary", _ITINERARY_FAILURE_SENTINEL)
         llm_calls = state.get("llm_calls", 0)
@@ -1184,9 +1234,7 @@ async def final_agent(state: TravelState):
             "run_status": RunStatus.COMPLETED.value,
         }
     except Exception as exc:
-        import traceback as _tb
-        print(f"[final_agent] LLM call FAILED ({type(exc).__name__}): {exc}", flush=True)
-        print(_tb.format_exc(), flush=True)
+        print(f"[final_agent] LLM call failed (type={type(exc).__name__}).", flush=True)
         return {
             "final_response": "The final travel plan could not be generated. Please try again.",
             "messages": [AIMessage(content="Final plan generation failed.")],
@@ -1479,6 +1527,9 @@ def _serialize_result(result: dict[str, Any], thread_id: str) -> dict[str, Any]:
                 "latency_ms": item.get("latency_ms"),
                 "source_count": item.get("source_count", 0),
                 "error_code": item.get("error_code"),
+                "transport": item.get("transport"),
+                "cache_status": item.get("cache_status"),
+                "stage_timings_ms": item.get("stage_timings_ms", {}),
             })
 
     return {

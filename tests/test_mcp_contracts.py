@@ -92,7 +92,11 @@ class TestTavilyNormalization(unittest.TestCase):
         """Tavily search results extract sources and are bounded to top results."""
         raw_mock = {
             "results": [
-                {"title": f"Hotel {i}", "url": f"https://example.com/hotel{i}", "content": f"Description {i}"}
+                {
+                    "title": f"Hotel {i}",
+                    "url": f"https://example.com/hotel{i}",
+                    "content": f"Detailed accommodation description {i} with neighborhood context.",
+                }
                 for i in range(15)
             ]
         }

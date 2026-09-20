@@ -54,17 +54,38 @@ MAX_LLM_CONTINUATIONS: int = int(os.getenv("MAX_LLM_CONTINUATIONS", "2"))
 # ---------------------------------------------------------------------------
 # Each external provider call is wrapped in asyncio.timeout() using these values.
 PROVIDER_TIMEOUT_SECONDS: dict[str, float] = {
-    "aviation": 45.0,          # AviationStack MCP — uvx cold-start + API call on Render
-    "tavily":   15.0,          # Tavily HTTP search
-    "weather":  25.0,          # Custom weather MCP — must exceed server's internal 20s timeout
+    "aviation": 22.0,          # Direct AviationStack HTTPS request
+    "tavily":   15.0,          # Direct Tavily HTTPS search
+    "weather":  15.0,          # Direct OpenWeather geocode/current/forecast calls
     "llm":      45.0,          # Generation model (120B) — may be slower than 70B
     "llm_structured": 30.0,    # Control model structured outputs
 }
 
+# Provider runtime controls. Cache keys never include credentials, and only payloads
+# that pass adapter validation are cached.
+PROVIDER_CACHE_TTL_SECONDS: dict[str, float] = {
+    "aviation": 900.0,
+    "tavily": 21600.0,
+    "geocode": 2592000.0,
+    "weather_current": 600.0,
+    "weather_forecast": 1800.0,
+}
+PROVIDER_CONCURRENCY_LIMITS: dict[str, int] = {
+    "aviation": 2,
+    "tavily": 2,
+    "weather": 4,
+}
+PROVIDER_CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 3
+PROVIDER_CIRCUIT_BREAKER_COOLDOWN_SECONDS: float = 30.0
+
+# "direct" is the production path. "mcp" remains available for compatibility
+# comparisons and controlled diagnostics, not as an automatic duplicate fallback.
+PROVIDER_TRANSPORT: str = os.getenv("PROVIDER_TRANSPORT", "direct").strip().casefold()
+
 # ---------------------------------------------------------------------------
-# Retry settings (MCP providers via provider_utils)
+# Retry settings (all provider transports via provider_utils)
 # ---------------------------------------------------------------------------
-RETRY_MAX_ATTEMPTS: int = 1          # Single attempt, no retry
+RETRY_MAX_ATTEMPTS: int = 2          # At most one retry for classified transient failures
 RETRY_BASE_DELAY_SECONDS: float = 0.5
 
 # ---------------------------------------------------------------------------

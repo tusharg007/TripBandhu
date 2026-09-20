@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
@@ -15,6 +16,7 @@ from agent_config import (
     PROVIDER_TIMEOUT_SECONDS,
     RETRY_MAX_ATTEMPTS,
     RETRY_BASE_DELAY_SECONDS,
+    RATE_LIMIT_SHORT_WAIT_MAX_SECONDS,
 )
 from schemas import (
     CapabilityResult,
@@ -63,8 +65,10 @@ def _unwrap_mcp_payload(value: Any) -> Any:
 def _status_error_code(status_code: int | None) -> ErrorCode:
     if status_code == 429:
         return ErrorCode.RATE_LIMITED
-    if status_code in {401, 403}:
+    if status_code == 401:
         return ErrorCode.AUTH_CONFIGURATION
+    if status_code == 403:
+        return ErrorCode.ACCESS_DENIED
     if status_code in {408, 504}:
         return ErrorCode.TIMEOUT
     if status_code is not None and status_code >= 500:
@@ -93,8 +97,10 @@ def _provider_payload_error(value: Any) -> ProviderPayloadError | None:
     detail_message = detail.get("error") if isinstance(detail, dict) else ""
     if status_code == 429:
         safe_description = "Provider rate limit exceeded due to excessive requests."
-    elif status_code in {401, 403}:
+    elif status_code == 401:
         safe_description = "Provider authentication or access was rejected."
+    elif status_code == 403:
+        safe_description = "Provider access was denied for this endpoint or subscription."
     elif status_code is not None and status_code >= 500:
         safe_description = "Provider service is temporarily unavailable."
     else:
@@ -115,6 +121,10 @@ def _classify_exception(exc: BaseException) -> ErrorCode:
 
     if isinstance(exc, ProviderPayloadError):
         return exc.error_code
+
+    explicit_code = getattr(exc, "error_code", None)
+    if isinstance(explicit_code, ErrorCode):
+        return explicit_code
 
     if isinstance(exc, asyncio.TimeoutError):
         return ErrorCode.TIMEOUT
@@ -140,6 +150,34 @@ def _classify_exception(exc: BaseException) -> ErrorCode:
     return ErrorCode.INTERNAL
 
 
+def _provider_meta(value: Any) -> dict[str, Any]:
+    payload = _unwrap_mcp_payload(value)
+    if isinstance(payload, dict) and isinstance(payload.get("_meta"), dict):
+        return dict(payload["_meta"])
+    return {}
+
+
+def _default_source_count(value: Any) -> int:
+    payload = _unwrap_mcp_payload(value)
+    if payload in (None, "", [], {}):
+        return 0
+    if isinstance(payload, list):
+        return len(payload)
+    if isinstance(payload, dict):
+        for field in ("results", "data", "forecast"):
+            records = payload.get(field)
+            if isinstance(records, list):
+                return len(records)
+        return 1
+    return 1
+
+
+def _safe_failure_log(exc: BaseException, code: ErrorCode) -> str:
+    status = getattr(exc, "status_code", None)
+    status_text = f", status={status}" if isinstance(status, int) else ""
+    return f"{type(exc).__name__}, code={code.value}{status_text}"
+
+
 def _is_retryable(code: ErrorCode) -> bool:
     return code in RETRYABLE_ERROR_CODES
 
@@ -155,6 +193,7 @@ async def async_call_provider(
     tool_name: str = "generic_tool",
     timeout_override: float | None = None,
     max_attempts: int = RETRY_MAX_ATTEMPTS,
+    source_count_fn: Callable[[Any], int] | None = None,
 ) -> CapabilityResult:
     """Call an async provider coroutine with bounded timeout, bounded retry, and trace capture.
 
@@ -165,6 +204,9 @@ async def async_call_provider(
     started_at = datetime.now(timezone.utc).isoformat()
     last_code = ErrorCode.INTERNAL
     total_retries = 0
+    last_transport = "unknown"
+    last_status_code: int | None = None
+    last_request_id: str | None = None
     t_start = time.monotonic()
 
     for attempt in range(1, max_attempts + 1):
@@ -176,8 +218,16 @@ async def async_call_provider(
             if embedded_error is not None:
                 raise embedded_error
 
+            source_count = (source_count_fn or _default_source_count)(data)
+            if source_count <= 0:
+                raise ProviderPayloadError(
+                    "Provider returned no usable evidence.",
+                    error_code=ErrorCode.INVALID_RESPONSE,
+                )
+
             latency_ms = int((time.monotonic() - t_start) * 1000)
             completed_at = datetime.now(timezone.utc).isoformat()
+            meta = _provider_meta(data)
 
             trace_entry = CapabilityTraceEntry(
                 sequence=1,
@@ -191,7 +241,16 @@ async def async_call_provider(
                 started_at=started_at,
                 completed_at=completed_at,
                 error_code=None,
-                source_count=1 if data else 0,
+                source_count=source_count,
+                transport=str(meta.get("transport") or "mcp"),
+                cache_status=str(meta.get("cache_status") or "none"),
+                provider_status_code=meta.get("provider_status_code"),
+                provider_request_id=meta.get("provider_request_id"),
+                stage_timings_ms={
+                    str(key): int(value)
+                    for key, value in (meta.get("stage_timings_ms") or {}).items()
+                    if isinstance(value, (int, float))
+                },
             )
             return CapabilityResult.ok(data=data, latency_ms=latency_ms, trace_entry=trace_entry)
 
@@ -203,10 +262,13 @@ async def async_call_provider(
             latency_ms = int((time.monotonic() - t_start) * 1000)
             last_code = _classify_exception(exc)
             total_retries = attempt - 1
+            last_transport = str(getattr(exc, "transport", "mcp"))
+            last_status_code = getattr(exc, "status_code", None)
+            last_request_id = getattr(exc, "provider_request_id", None)
 
             print(
                 f"[provider_utils] {provider_name} attempt {attempt}/{max_attempts} "
-                f"FAILED ({last_code}): {type(exc).__name__}: {exc}",
+                f"FAILED ({_safe_failure_log(exc, last_code)})",
                 flush=True,
             )
 
@@ -214,8 +276,21 @@ async def async_call_provider(
                 break
 
             if attempt < max_attempts:
-                total_retries += 1
-                await asyncio.sleep(RETRY_BASE_DELAY_SECONDS)
+                retry_after = getattr(exc, "retry_after", None)
+                if last_code == ErrorCode.RATE_LIMITED and not isinstance(retry_after, (int, float)):
+                    break
+                if (
+                    last_code == ErrorCode.RATE_LIMITED
+                    and isinstance(retry_after, (int, float))
+                    and retry_after > RATE_LIMIT_SHORT_WAIT_MAX_SECONDS
+                ):
+                    break
+                delay = (
+                    float(retry_after)
+                    if last_code == ErrorCode.RATE_LIMITED and isinstance(retry_after, (int, float))
+                    else RETRY_BASE_DELAY_SECONDS * attempt
+                )
+                await asyncio.sleep(max(0.0, delay) + random.uniform(0.0, RETRY_BASE_DELAY_SECONDS))
 
     completed_at = datetime.now(timezone.utc).isoformat()
     trace_entry = CapabilityTraceEntry(
@@ -231,6 +306,9 @@ async def async_call_provider(
         completed_at=completed_at,
         error_code=last_code.value,
         source_count=0,
+        transport=last_transport,
+        provider_status_code=last_status_code,
+        provider_request_id=last_request_id,
     )
 
     return CapabilityResult.fail(

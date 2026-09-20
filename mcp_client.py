@@ -10,7 +10,21 @@ import certifi
 from langchain_groq import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from project_config import PROJECT_ROOT, load_project_env
-from agent_config import GROQ_CONTROL_MODEL, LLM_REASONING_EFFORT, LLM_REASONING_FORMAT, MAX_TOKENS_BY_TASK
+from agent_config import (
+    GROQ_CONTROL_MODEL,
+    LLM_REASONING_EFFORT,
+    LLM_REASONING_FORMAT,
+    MAX_TOKENS_BY_TASK,
+    PROVIDER_TRANSPORT,
+)
+from provider_adapters import (
+    close_provider_runtime,
+    get_current_weather,
+    get_weather_forecast,
+    search_aviation_flights,
+    search_tavily,
+    start_provider_runtime,
+)
 
 from schemas import (
     CapabilityHealth,
@@ -125,8 +139,15 @@ llm = make_groq_llm(
 # MCP Client (Reusable MultiServer Client)
 # =========================================================
 
-client = MultiServerMCPClient(
-    {
+_mcp_client: MultiServerMCPClient | None = None
+
+
+def _get_mcp_client() -> MultiServerMCPClient:
+    """Create the compatibility MCP client only when explicitly requested."""
+    global _mcp_client
+    if _mcp_client is not None:
+        return _mcp_client
+    _mcp_client = MultiServerMCPClient({
         "tavily": {
             "transport": "streamable_http",
             "url": (
@@ -166,8 +187,8 @@ client = MultiServerMCPClient(
                 OPENWEATHER_API_KEY=OPENWEATHER_API_KEY,
             ),
         },
-    }
-)
+    })
+    return _mcp_client
 
 
 # =========================================================
@@ -187,7 +208,7 @@ async def discover_mcp_tools(server_name: str) -> list[Any]:
         if not WEATHER_SERVER_PATH.is_file():
             raise FileNotFoundError(f"Weather MCP server not found: {WEATHER_SERVER_PATH}")
 
-    return await client.get_tools(server_name=server_name)
+    return await _get_mcp_client().get_tools(server_name=server_name)
 
 
 async def validate_mcp_capability_health() -> dict[str, CapabilityHealth]:
@@ -229,23 +250,47 @@ async def _get_server_tool(server_name: str, tool_name: str):
 # =========================================================
 
 async def tavily_mcp_search(query: str):
+    if PROVIDER_TRANSPORT == "direct":
+        return await search_tavily(query)
     search_tool = await _get_server_tool("tavily", "tavily_search")
     return await search_tool.ainvoke({"query": query})
 
 
 async def aviation_mcp_call(tool_name: str, tool_args: dict[str, Any] | None = None):
+    if PROVIDER_TRANSPORT == "direct":
+        if tool_name != "list_routes":
+            raise RuntimeError(
+                f"Direct aviation adapter does not expose bulk tool '{tool_name}'."
+            )
+        return await search_aviation_flights(tool_args)
     aviation_tool = await _get_server_tool("aviationstack", tool_name)
     return await aviation_tool.ainvoke(tool_args or {})
 
 
 async def weather_mcp_search(city: str):
+    if PROVIDER_TRANSPORT == "direct":
+        return await get_current_weather(city)
     weather_tool = await _get_server_tool("weather", "get_current_weather")
     return await weather_tool.ainvoke({"city": city})
 
 
 async def forecast_mcp_search(city: str):
+    if PROVIDER_TRANSPORT == "direct":
+        return await get_weather_forecast(city)
     forecast_tool = await _get_server_tool("weather", "get_forecast")
     return await forecast_tool.ainvoke({"city": city})
+
+
+async def start_provider_clients() -> None:
+    """Initialize shared direct HTTP connections during application startup."""
+    if PROVIDER_TRANSPORT == "direct":
+        await start_provider_runtime()
+
+
+async def close_provider_clients() -> None:
+    """Close shared provider connections during application shutdown."""
+    if PROVIDER_TRANSPORT == "direct":
+        await close_provider_runtime()
 
 
 # =========================================================

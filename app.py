@@ -1,5 +1,4 @@
 import os
-import traceback
 import uvicorn
 from contextlib import asynccontextmanager
 
@@ -22,6 +21,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from pdf_generator import PdfContentError, build_itinerary_pdf
 from deployment_info import APP_VERSION, get_asset_version, get_build_sha, get_deployment_info
+from mcp_client import close_provider_clients, start_provider_clients
 
 
 BASE_DIR = PROJECT_ROOT
@@ -34,19 +34,22 @@ BASE_DIR = PROJECT_ROOT
 async def lifespan(app: FastAPI):
     """Initialize the AsyncPostgresSaver and bind TravelAgentService to app.state."""
     checkpointer_cm = None
+    await start_provider_clients()
     try:
         checkpointer_cm = AsyncPostgresSaver.from_conn_string(DATABASE_URL)
         checkpointer = await checkpointer_cm.__aenter__()
         await checkpointer.setup()
         app.state.travel_service = create_travel_service(checkpointer)
+        app.state.checkpointer_backend = "postgresql"
         print("[lifespan] TravelAgentService initialized with AsyncPostgresSaver", flush=True)
     except Exception as exc:
         print(
-            f"[lifespan] AsyncPostgresSaver initialization failed ({type(exc).__name__}: {exc}). "
+            f"[lifespan] AsyncPostgresSaver initialization failed ({type(exc).__name__}). "
             "Falling back to InMemorySaver for application lifecycle.",
             flush=True,
         )
         app.state.travel_service = create_travel_service(InMemorySaver())
+        app.state.checkpointer_backend = "memory"
 
     try:
         yield
@@ -56,7 +59,11 @@ async def lifespan(app: FastAPI):
                 await checkpointer_cm.__aexit__(None, None, None)
                 print("[lifespan] AsyncPostgresSaver closed cleanly.", flush=True)
             except Exception as close_exc:
-                print(f"[lifespan] Error closing AsyncPostgresSaver: {close_exc}", flush=True)
+                print(
+                    f"[lifespan] Error closing AsyncPostgresSaver ({type(close_exc).__name__}).",
+                    flush=True,
+                )
+        await close_provider_clients()
 
 
 app = FastAPI(
@@ -119,6 +126,8 @@ PUBLIC_CONTRACT_DEFAULTS = {
     "review_limit_reached": False,
     "capability_trace": [],
     "llm_calls": 0,
+    "llm_token_usage": {},
+    "run_status": "COMPLETED",
 }
 
 
@@ -164,9 +173,8 @@ async def download_pdf(req: PdfRequest):
         pdf_bytes = await run_in_threadpool(build_itinerary_pdf, req.text, req.title)
     except PdfContentError as exc:
         return public_error("INVALID_PDF_CONTENT", str(exc), 400)
-    except Exception:
-        print("PDF_GENERATION_FAILED", flush=True)
-        traceback.print_exc()
+    except Exception as exc:
+        print(f"PDF_GENERATION_FAILED type={type(exc).__name__}", flush=True)
         return public_error("PDF_GENERATION_FAILED", "Could not generate PDF.", 500)
 
     return Response(
@@ -204,9 +212,8 @@ async def travel_planner(request: Request, request_data: TravelRequest):
 
         return JSONResponse(content=normalize_travel_response(result))
 
-    except Exception:
-        print("TRAVEL_PLANNING_FAILED")
-        traceback.print_exc()
+    except Exception as exc:
+        print(f"TRAVEL_PLANNING_FAILED type={type(exc).__name__}", flush=True)
 
         return public_error(
             "TRAVEL_PLANNING_FAILED",
@@ -253,9 +260,8 @@ async def resume_travel_planner(request: Request, request_data: TravelResumeRequ
             status_code=400,
         )
 
-    except Exception:
-        print("RESUME_FAILED")
-        traceback.print_exc()
+    except Exception as exc:
+        print(f"RESUME_FAILED type={type(exc).__name__}", flush=True)
 
         return public_error(
             "RESUME_FAILED",

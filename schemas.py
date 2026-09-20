@@ -160,6 +160,8 @@ class ErrorCode(str, Enum):
     UNAVAILABLE = "UNAVAILABLE"
     INVALID_RESPONSE = "INVALID_RESPONSE"
     AUTH_CONFIGURATION = "AUTH_CONFIGURATION"
+    ACCESS_DENIED = "ACCESS_DENIED"
+    CIRCUIT_OPEN = "CIRCUIT_OPEN"
     CONTRACT_MISMATCH = "CONTRACT_MISMATCH"
     INTERNAL = "INTERNAL"
 
@@ -250,6 +252,11 @@ class CapabilityTraceEntry(BaseModel):
     completed_at: str = Field(default="")
     error_code: Optional[str] = Field(default=None)
     source_count: int = Field(default=0)
+    transport: Optional[str] = Field(default=None)
+    cache_status: Optional[str] = Field(default=None)
+    provider_status_code: Optional[int] = Field(default=None)
+    provider_request_id: Optional[str] = Field(default=None)
+    stage_timings_ms: dict[str, int] = Field(default_factory=dict)
 
     def to_public_dict(self) -> dict[str, Any]:
         """Safe public representation stripped of internal details."""
@@ -261,6 +268,9 @@ class CapabilityTraceEntry(BaseModel):
             "latency_ms": self.latency_ms,
             "source_count": self.source_count,
             "error_code": self.error_code,
+            "transport": self.transport,
+            "cache_status": self.cache_status,
+            "stage_timings_ms": self.stage_timings_ms,
         }
 
 

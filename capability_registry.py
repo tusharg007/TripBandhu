@@ -132,8 +132,16 @@ def _unwrap_mcp(raw: Any) -> Any:
     format. This helper unwraps that envelope and JSON-parses the inner text so
     downstream normalizers always receive plain dicts / lists / strings.
     """
-    if isinstance(raw, list) and raw and isinstance(raw[0], dict) and raw[0].get("type") == "text":
-        combined = " ".join(item.get("text", "") for item in raw if isinstance(item, dict))
+    if isinstance(raw, list) and raw:
+        text_parts = []
+        for item in raw:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text_parts.append(str(item.get("text") or ""))
+            elif getattr(item, "type", None) == "text":
+                text_parts.append(str(getattr(item, "text", "") or ""))
+        if not text_parts:
+            return raw
+        combined = " ".join(text_parts)
         try:
             return json.loads(combined)
         except (json.JSONDecodeError, TypeError):
@@ -194,7 +202,12 @@ def _select_provider_records(value: Any, max_records: int = 30) -> Any:
     return unwrapped
 
 
-def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int] = None) -> CapabilityEvidence:
+def normalize_tavily_results(
+    raw_data: Any,
+    query: str,
+    latency_ms: Optional[int] = None,
+    destination: str = "",
+) -> CapabilityEvidence:
     """Keep hotel-relevant Tavily evidence and discard unrelated search noise."""
     now_iso = datetime.now(timezone.utc).isoformat()
     sources: list[SourceReference] = []
@@ -205,6 +218,7 @@ def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int
     # Handle string, list, or dict raw formats safely
     raw_results = []
 
+    structured_results = isinstance(raw_data, dict) and isinstance(raw_data.get("results"), list)
     if isinstance(raw_data, dict):
         raw_results = raw_data.get("results", []) or raw_data.get("data", [])
         if not raw_results and "content" in raw_data:
@@ -235,7 +249,24 @@ def normalize_tavily_results(raw_data: Any, query: str, latency_ms: Optional[int
             content = _clean_web_text(item)
 
         score = _hotel_relevance_score(title, url, content)
-        if score > 0:
+        destination_terms = [
+            term
+            for term in re.findall(r"[a-z0-9]+", destination.casefold())
+            if len(term) >= 3
+        ]
+        destination_match = not destination_terms or any(
+            term in f"{title} {url} {content}".casefold() for term in destination_terms
+        )
+        valid_url = bool(re.match(r"^https?://[^\s/]+", url, flags=re.IGNORECASE))
+        # Direct API responses must include a real source URL, useful text, and a
+        # destination match. Plain strings remain accepted for deterministic legacy
+        # fixtures and MCP compatibility, never for the production direct adapter.
+        is_usable = (
+            score > 0
+            and destination_match
+            and (not structured_results or (valid_url and len(content) >= 30))
+        )
+        if is_usable:
             ranked_results.append((score, index, {"title": title, "url": url, "content": content}))
 
     # Six relevant sources are enough for synthesis; ranking prevents unrelated high-
@@ -298,6 +329,8 @@ def normalize_weather_results(
     current_data = _unwrap_mcp(current_data)
     forecast_data = _unwrap_mcp(forecast_data)
 
+    current_ok = _usable_weather_payload(current_data)
+    forecast_ok = _usable_weather_payload(forecast_data)
     sources = [
         SourceReference(
             provider="OpenWeather API",
@@ -307,10 +340,7 @@ def normalize_weather_results(
             evidence_kind=EvidenceKind.PROVIDER_DATA,
             freshness=EvidenceFreshness.LIVE,
         )
-    ]
-
-    current_ok = _usable_weather_payload(current_data)
-    forecast_ok = _usable_weather_payload(forecast_data)
+    ] if current_ok or forecast_ok else []
     safe_current = current_data if current_ok else None
     safe_forecast = forecast_data if forecast_ok else None
     structured_data = {
@@ -345,10 +375,19 @@ def normalize_weather_results(
         for entry in forecast_entries:
             if not isinstance(entry, dict):
                 continue
+            label = entry.get("date") or entry.get("datetime") or "Upcoming"
+            if entry.get("temperature_min_c") is not None or entry.get("temperature_max_c") is not None:
+                temperature = (
+                    f"{_number(entry.get('temperature_min_c'), '°C')} to "
+                    f"{_number(entry.get('temperature_max_c'), '°C')}"
+                )
+            else:
+                temperature = _number(entry.get("temperature_c", entry.get("temp")), "°C")
+            rain = entry.get("precipitation_probability_max")
+            rain_text = f", precipitation probability up to {rain}%" if rain is not None else ""
             rows.append(
-                f"- **{entry.get('datetime') or 'Upcoming'}:** "
-                f"{entry.get('condition') or 'Conditions not reported'}, "
-                f"{_number(entry.get('temperature_c', entry.get('temp')), '°C')}"
+                f"- **{label}:** {entry.get('condition') or 'Conditions not reported'}, "
+                f"{temperature}{rain_text}"
             )
         if rows:
             sections.append("## Near-term forecast\n" + "\n".join(rows))
@@ -388,7 +427,7 @@ def normalize_flight_results(
     sources = [
         SourceReference(
             provider="AviationStack Schedule & Route Database",
-            title=f"Flight Routes & Airports for {origin or 'Origin'} -> {destination}",
+            title=f"Observed Flight Status Records for {origin or 'Origin'} -> {destination}",
             url="https://aviationstack.com",
             observed_at=now_iso,
             evidence_kind=EvidenceKind.PROVIDER_DATA,
@@ -399,6 +438,12 @@ def normalize_flight_results(
     selected_routes = _select_provider_records(routes_data)
     selected_airports = _select_provider_records(airports_data)
     selected_airlines = _select_provider_records(airlines_data)
+    route_count = 0
+    if isinstance(selected_routes, list):
+        route_count = len(selected_routes)
+    elif isinstance(selected_routes, dict) and isinstance(selected_routes.get("data"), list):
+        route_count = len(selected_routes["data"])
+        selected_routes.pop("_meta", None)
     structured_data = {
         "destination": destination,
         "origin": origin,
@@ -414,7 +459,8 @@ def normalize_flight_results(
     airlines_str = json.dumps(selected_airlines, ensure_ascii=False, default=str) if airlines_data else "No airline records returned."
 
     summary = (
-        f"**Route Information ({origin or 'Origin'} -> {destination}) [REFERENCE]:**\n{routes_str}\n\n"
+        f"**Observed Flight Records ({origin or 'Origin'} -> {destination}) "
+        f"[REFERENCE - Not Future Availability or Fare]:**\n{routes_str}\n\n"
         f"**Serving Airports [REFERENCE]:**\n{airports_str}\n\n"
         f"**Operating Airlines [REFERENCE]:**\n{airlines_str}"
     )
@@ -425,12 +471,12 @@ def normalize_flight_results(
         tool_name="list_routes,list_airports,list_airlines",
         evidence_kind=EvidenceKind.PROVIDER_DATA,
         freshness=EvidenceFreshness.REFERENCE,
-        status=CapabilityHealth.AVAILABLE,
+        status=CapabilityHealth.AVAILABLE if route_count else CapabilityHealth.DEGRADED,
         retrieved_at=now_iso,
         latency_ms=latency_ms,
         data=structured_data,
         summary=summary,
-        sources=sources,
+        sources=sources if route_count else [],
     )
 
 

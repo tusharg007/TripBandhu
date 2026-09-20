@@ -28,6 +28,23 @@ BASE_URL = "https://api.aviationstack.com/v1/flights"
 AIRPORTS = airportsdata.load("IATA")
 
 
+def get_airport_reference(iata_code: str | None) -> dict | None:
+    """Return bounded local airport reference data without a provider round-trip."""
+    code = str(iata_code or "").strip().upper()
+    airport = AIRPORTS.get(code)
+    if not code or not isinstance(airport, dict):
+        return None
+    return {
+        "iata": code,
+        "name": airport.get("name"),
+        "city": airport.get("city"),
+        "country": airport.get("country"),
+        "latitude": airport.get("lat"),
+        "longitude": airport.get("lon"),
+        "timezone": airport.get("tz"),
+    }
+
+
 
 COUNTRY_ALIASES = {
     "usa": "US",
@@ -492,8 +509,8 @@ def search_flights(query: str, limit: int = 10):
     try:
         response = requests.get(BASE_URL, params=params, timeout=30)
         data = response.json()
-    except requests.exceptions.RequestException as e:
-        return f"Flight API request failed: {e}"
+    except requests.exceptions.RequestException:
+        return "Flight API request failed. Check provider connectivity and try again."
     except ValueError:
         return "Flight API returned invalid JSON."
 

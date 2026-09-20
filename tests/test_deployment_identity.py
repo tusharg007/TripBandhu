@@ -13,6 +13,7 @@ from pypdf import PdfReader
 import app
 import backend
 from agent_config import PROVIDER_TIMEOUT_SECONDS
+from deployment_info import APP_VERSION, PROVIDER_CONFIG_VERSION
 
 
 def test_version_exposes_safe_build_contract():
@@ -24,11 +25,11 @@ def test_version_exposes_safe_build_contract():
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-tripbandhu-build"] == commit
     assert response.json() == {
-        "app_version": "1.0.3",
+        "app_version": APP_VERSION,
         "build_sha": commit,
         "asset_version": commit[:12],
         "pdf_renderer": "reportlab-v1",
-        "provider_config_version": "provider-timeouts-v2",
+        "provider_config_version": PROVIDER_CONFIG_VERSION,
         "public_schema_version": "1",
         "environment": "render",
     }
@@ -78,8 +79,8 @@ def test_graph_run_metadata_identifies_build_and_provider_configuration():
 
     config = graph.ainvoke.await_args.kwargs["config"]
     assert config["metadata"] == {
-        "app_version": "1.0.3",
+        "app_version": APP_VERSION,
         "build_sha": commit,
-        "provider_config_version": "provider-timeouts-v2",
+        "provider_config_version": PROVIDER_CONFIG_VERSION,
         "provider_timeouts_seconds": PROVIDER_TIMEOUT_SECONDS,
     }

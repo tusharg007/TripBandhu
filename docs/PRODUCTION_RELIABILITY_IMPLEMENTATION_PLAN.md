@@ -77,7 +77,7 @@ Primary areas: Render configuration, `Dockerfile`, `app.py`, `templates/index.ht
 
 Acceptance: served JS uses `/api/travel/download-pdf`; public build identity matches the release; downloaded PDF has extractable text and no blank leading page. Record one fresh complete request and approval from this build before diagnosing remaining providers.
 
-Implementation status: the repository now exposes `/version` and an `X-TripBandhu-Build` response header, versions local assets by content and deployed assets by commit, stamps LangGraph/LangSmith invocation metadata with the build and provider timeout profile, and includes a server-PDF deployment smoke script plus a manually triggered GitHub Actions workflow. Local unit/contract tests and the end-to-end smoke check pass. The final Phase 0 gate remains the public Render check against the exact pushed commit and one fresh, traced request/approval from that build.
+Implementation status: complete. Build `18f9928` was verified on the public Render hostname through `/version`, commit-versioned assets, and a ReportLab PDF smoke download. A fresh public two-day Delhi-to-Jaipur request completed draft and approval. Its trace established the Phase 1 baseline: the old AviationStack MCP flow consumed approximately 110 seconds across three serial attempts while Tavily completed in approximately eight seconds.
 
 ### Phase 1: isolate and repair provider failures
 
@@ -95,6 +95,8 @@ Primary areas: `mcp_client.py`, `provider_utils.py`, `capability_registry.py`, `
 10. Use local airport references where suitable rather than repeatedly fetching global airport/airline catalogues for every itinerary. Validate requested routes and label schedules, observed flight status, and price estimates separately. Aviation data must not be represented as a bookable fare quotation.
 
 Acceptance: a successful raw provider response becomes usable evidence; an empty/malformed response cannot become COMPLETED with live data. Every failure has an actionable internal cause and a concise user message. Direct/MCP comparisons from the deployed region establish the actual remaining cause. Local success alone is not the release gate.
+
+Implementation status: direct-adapter core complete locally. AviationStack now uses one route-specific HTTPS call and local airport reference data; Tavily and OpenWeather use pooled direct HTTPS; weather geocoding is coalesced and current/forecast calls execute concurrently; forecasts are aggregated by destination-local date. Validated TTL caching, cancellation-safe identical-request coalescing, concurrency limits, a circuit breaker, typed access/rate/timeout/invalid-response errors, sanitized tracing, and a restricted provider diagnostic command are covered by 152 fast unit/contract tests and a 49/49 deterministic benchmark. The final pre-deployment live diagnostic returned 10 route-matched aviation records in 890 ms, six destination-relevant Tavily sources in 764 ms, current weather in 313 ms, and six daily forecast groups in 485 ms. The remaining gate is deployment of Phase 1 followed by the same sanitized diagnostic and one traced public request from that build. Optional MCP comparison remains available through `PROVIDER_TRANSPORT=mcp`; it is not an automatic duplicate fallback.
 
 ### Phase 2: establish a validated itinerary contract
 

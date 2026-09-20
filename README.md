@@ -1,6 +1,6 @@
 # TripBandhu
 
-*A stateful multi-agent travel research system that coordinates specialist agents, live external MCP capabilities, evidence-aware synthesis, and iterative human-in-the-loop review — built on LangGraph, FastAPI, and PostgreSQL.*
+*A stateful multi-agent travel research system that coordinates specialist agents, validated live provider APIs, evidence-aware synthesis, and iterative human-in-the-loop review — built on LangGraph, FastAPI, and PostgreSQL.*
 
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -9,7 +9,7 @@
 [![Groq](https://img.shields.io/badge/Groq-GPT--OSS%2020B%20%2F%20120B-F55036?style=for-the-badge)](https://console.groq.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4B942?style=for-the-badge)](LICENSE)
 
-> **Latest release:** `v1.0.3` — Deployment Identity & Export Verification
+> **Latest release:** `v1.1.0` — Direct Provider Reliability & Diagnostics
 >
 > **Live demo:** [https://tripbandhu.onrender.com](https://tripbandhu.onrender.com) *(free tier — cold starts; local run is recommended)*
 
@@ -56,7 +56,7 @@ Most AI travel assistants suffer from three fundamental flaws:
 - **Deterministic State Machine** — Orchestrated via LangGraph DAG with explicit routing, state reducers, and defensive bounds
 - **Truthful Evidence & Groundedness** — Every output tagged with semantic classification (`PROVIDER_DATA`, `WEB_SOURCE`, `MODEL_ESTIMATE`, `DERIVED`, `UNAVAILABLE`) and freshness (`LIVE`, `FORECAST`, `REFERENCE`)
 - **True Async HITL** — Execution suspends via `interrupt()` and resumes with `Command(resume=...)`; review cap terminates safely without auto-finalizing
-- **Resilient MCP Capability Layer** — All external tools pass through validated contracts with schema-drift detection and graceful degradation
+- **Resilient Provider Capability Layer** — Direct async HTTP adapters use validated contracts, bounded concurrency, safe failure classification, and graceful degradation; MCP remains an explicit compatibility mode
 - **Checkpoint Persistence** — `AsyncPostgresSaver` ensures graph runs survive complete service restarts
 
 ### Current Reliability Hardening
@@ -64,8 +64,9 @@ Most AI travel assistants suffer from three fundamental flaws:
 - **Clean specialist presentation** — Hotel and weather evidence is filtered, normalized, and converted into traveler-facing Markdown instead of exposing raw provider payloads or developer errors.
 - **Strict specialist boundaries** — Weather output is rejected if it leaks budget, hotel, flight, or itinerary content; unsupported hotel search results are excluded before synthesis.
 - **Complete long-form output** — Flight, budget, draft itinerary, and revision tasks use bounded continuation when a model stops at its token limit, avoiding half-finished tables and truncated plans.
-- **Typed provider failures** — Errors embedded inside successful MCP envelopes are detected centrally. Tavily HTTP `429` responses are reported as temporary provider rate limits rather than misleadingly described as poor hotel-search results.
-- **Location-aware tools** — Common city aliases are normalized for weather lookups, while flight requests resolve origin and destination locations to IATA codes before calling AviationStack.
+- **Typed provider failures** — HTTP and embedded provider errors distinguish authentication, subscription/access denial, rate limiting, timeouts, invalid payloads, circuit-open states, and temporary unavailability without exposing keys or credential-bearing URLs.
+- **Pooled and bounded provider access** — Application-scoped HTTP connections, per-provider concurrency caps, validated TTL caches, identical-request coalescing, and short circuit-breaker cooldowns reduce latency and quota waste.
+- **Location-aware tools** — OpenWeather queries geocode a destination to coordinates before fetching current conditions and a destination-local daily forecast; flight requests resolve origin and destination to IATA codes before one route-specific AviationStack request.
 
 ---
 
@@ -81,14 +82,15 @@ flowchart TB
         API["FastAPI App\n(/api/travel, /api/travel/resume, /api/travel/download-pdf)"]
         Guard["Input Guardrail\n(Scope, Safety & Prompt Injection)"]
         Pool["Application-Scoped\nAsyncPostgresSaver Pool"]
+        Providers["Application-Scoped Provider Runtime\n(pooling, cache, coalescing, circuit breaker)"]
     end
 
     subgraph LangGraphCore ["LangGraph Stateful Execution Core"]
         Supervisor["Structured Supervisor\n(Constraint Extraction & Dispatch)"]
         subgraph Specialists ["Specialist Agents"]
-            Flight["Flight\n(AviationStack MCP via uvx)"]
-            Hotel["Hotel\n(Tavily Web Search MCP)"]
-            Weather["Weather\n(OpenWeather Custom MCP)"]
+            Flight["Flight\n(AviationStack Direct Adapter)"]
+            Hotel["Hotel\n(Tavily Direct Adapter)"]
+            Weather["Weather\n(OpenWeather Direct Adapter)"]
             Budget["Budget\n(Cost Allocation Engine)"]
             Itinerary["Itinerary\n(Schedule Coordinator)"]
         end
@@ -107,16 +109,17 @@ flowchart TB
     Supervisor --> Flight & Hotel & Weather & Budget --> Itinerary --> HITL
     HITL -->|Approved| Synthesis --> API --> UI
     HITL -->|Revision| Supervisor
-    Flight -.->|MCP| AS
-    Hotel -.->|MCP| TV
-    Weather -.->|MCP| OW
+    Flight & Hotel & Weather --> Providers
+    Providers -.->|Validated HTTPS| AS
+    Providers -.->|Validated HTTPS| TV
+    Providers -.->|Validated HTTPS| OW
     Pool <--> PG
     LangGraphCore <--> Pool
 ```
 
 ---
 
-## 🤖 LLM Architecture (v1.0.2)
+## 🤖 LLM Architecture
 
 TripBandhu uses **task-specific Groq models** via the `make_groq_llm` factory with `max_retries=0`:
 
@@ -134,14 +137,14 @@ TripBandhu uses **task-specific Groq models** via the `make_groq_llm` factory wi
 
 | Factor | Local Run | Render Free Tier |
 | :--- | :--- | :--- |
-| **AviationStack startup** | `uvx` cache: starts in ~1-2s | Cold-downloads MCP package on each deploy: 10-20s extra |
-| **Weather API response** | Direct network: ~1-3s | Render NAT overhead: often 20s+, hits 25s timeout |
+| **Provider transport** | Pooled direct HTTPS | Same direct adapters; no per-request `uvx` or weather subprocess |
+| **Provider latency** | Depends on local network | Depends on Render region and upstream provider; stage timings are recorded safely |
 | **Service sleep** | Never sleeps | Spins down after 15 min; ~30-60s wake-up |
-| **MCP subprocess stability** | Stable | Container memory pressure can crash subprocesses |
-| **Timeout reliability** | Rarely triggers | Frequently triggers even with 45s client limits |
-| **Flight data** | Consistently retrieves data | May time out during cold-start window |
+| **Request reuse** | Validated in-memory TTL cache | Same cache while the instance remains alive; reset after spin-down/restart |
+| **Checkpointing** | PostgreSQL when configured | Requires an active/reachable Render PostgreSQL service; otherwise explicitly falls back to memory |
+| **Durability** | Controlled by your database | Free service sleep/restarts make in-memory threads non-durable |
 
-**TL;DR:** Run locally for reliable flight data, weather, and complete hotel results. Use Render for quick demos only.
+**TL;DR:** The provider code path is now the same locally and on Render. Render Free remains appropriate for a portfolio demo, but cold starts and a suspended database still prevent production-grade availability and durable review sessions.
 
 ---
 
@@ -153,13 +156,7 @@ TripBandhu uses **task-specific Groq models** via the `make_groq_llm` factory wi
 | :--- | :--- | :--- |
 | Python | 3.11+ | Required |
 | PostgreSQL | 15+ | Optional — app uses in-memory if not configured |
-| `uv` (provides `uvx`) | Latest | Required for AviationStack MCP |
 | Git | Any | Clone repo |
-
-```bash
-# Install uv (if not already installed)
-pip install uv
-```
 
 ---
 
@@ -194,6 +191,7 @@ GROQ_API_KEY=gsk_your_groq_key_here
 TAVILY_API_KEY=tvly-your_tavily_key_here
 AVIATION_STACK_API_KEY=your_aviationstack_key_here
 OPENWEATHER_API_KEY=your_openweather_key_here
+PROVIDER_TRANSPORT=direct
 
 # PostgreSQL (optional — in-memory used if blank)
 DATABASE_URL=postgresql://postgres:your_password@localhost:5432/tripbandhu
@@ -216,17 +214,16 @@ CREATE DATABASE tripbandhu;
 
 ---
 
-### Step 4 — Verify AviationStack MCP
+### Step 4 — Verify Provider Contracts
 
 ```bash
-# Confirm uvx works
-uvx --version
-
-# Test AviationStack MCP starts without errors (Ctrl+C after it starts)
-uvx --with mcp==1.28.1 aviationstack-mcp==1.6.0
+python scripts/provider_diagnostics.py \
+  --provider all \
+  --origin Delhi \
+  --destination Jaipur
 ```
 
-If you see a pydantic warning but no `ModuleNotFoundError` — you're good.
+The diagnostic prints only typed status, latency, validated source counts, cache/transport state, HTTP status, request ID, and stage timings. It never prints raw payloads, API keys, or credential-bearing URLs. Set `PROVIDER_TRANSPORT=mcp` only for a controlled compatibility comparison.
 
 ---
 
@@ -257,7 +254,7 @@ Open **http://localhost:8080** and try these in order:
 ```
 What flights are available from Delhi to Bangkok?
 ```
-Verifies: AviationStack MCP starts correctly, route data appears in Flights tab, no fake fares.
+Verifies: the AviationStack direct adapter returns route-matched observed records, the Flights tab renders them safely, and no live fare is fabricated.
 
 #### Demo B — Full 7-Day Budget Trip
 ```
@@ -310,8 +307,9 @@ python -m eval.evaluator --postgres
 | :--- | :---: | :---: | :--- |
 | `GROQ_API_KEY` | **Yes** | — | Groq API key |
 | `TAVILY_API_KEY` | Optional | — | Hotel & web search |
-| `AVIATION_STACK_API_KEY` | Optional | — | Live flight routes (also accepted as `AVIATIONSTACK_API_KEY`) |
+| `AVIATION_STACK_API_KEY` | Optional | — | Observed flight-status records (also accepted as `AVIATIONSTACK_API_KEY`) |
 | `OPENWEATHER_API_KEY` | Optional | — | Weather data |
+| `PROVIDER_TRANSPORT` | Optional | `direct` | `direct` for production HTTPS adapters; `mcp` only for compatibility diagnostics |
 | `DATABASE_URL` | Optional | `""` | PostgreSQL connection string |
 | `PORT` | Optional | `8080` | Server port (Render sets this automatically) |
 | `MAX_REVIEW_ITERATIONS` | Optional | `10` | Max HITL revision cycles |
@@ -319,11 +317,7 @@ python -m eval.evaluator --postgres
 | `LANGSMITH_API_KEY` | Optional | — | LangSmith API key |
 | `LANGSMITH_PROJECT` | Optional | `TripBandhu` | LangSmith project name |
 
-> **Free-tier limits:**
-> - Groq `gpt-oss-120b`: 8,000 TPM hard limit
-> - Groq `gpt-oss-20b`: 12,000 TPM hard limit
-> - AviationStack free: 100 API calls/month
-> - OpenWeather free: 60 calls/minute
+> **Provider limits:** Quotas and rate limits vary by provider plan and can change. Check the Groq, AviationStack, Tavily, and OpenWeather dashboards for the keys used by the deployed service. TripBandhu avoids hidden retries and exposes sanitized failure codes so quota exhaustion is distinguishable from authentication, access, timeout, and payload failures.
 
 ---
 
@@ -338,9 +332,9 @@ User Query
     ▼
 [Supervisor] extracts trip constraints
     │
-    ├──► [Flight Agent]    → AviationStack MCP
-    ├──► [Hotel Agent]     → Tavily web search
-    ├──► [Weather Agent]   → OpenWeather MCP
+    ├──► [Flight Agent]    → AviationStack direct adapter
+    ├──► [Hotel Agent]     → Tavily direct adapter
+    ├──► [Weather Agent]   → geocoded OpenWeather direct adapter
     └──► [Budget Agent]    → LLM cost estimation
     │
     ▼
@@ -364,14 +358,16 @@ User Query
 
 ---
 
-## 📊 Evaluation Results (v1.0.2)
+## 📊 Verification Status (v1.1.0)
 
 | Suite | Result |
 | :--- | :--- |
-| Pytest regression | ✅ 137 fast + 1 PostgreSQL integration test |
+| Pytest regression | ✅ 152 fast unit/contract tests |
 | Benchmark FAST mode (49 cases) | ✅ 49 / 49 passed |
-| Benchmark POSTGRES mode (50 cases) | ✅ 50 / 50 passed |
-| Live HITL validation on Render | ✅ Passed |
+| Live direct-provider diagnostic | ✅ AviationStack, Tavily, current weather, and daily forecast returned validated evidence |
+| Public deployment/PDF smoke | ✅ Build SHA, assets, ReportLab producer, attachment response, and PDF content verified |
+| Live HITL validation on Render | ✅ Draft and approval completed on build `18f9928` |
+| PostgreSQL persistence | ⚠️ CI uses isolated PostgreSQL; the current Render database is suspended and must be restored for durable live sessions |
 
 ---
 
@@ -380,12 +376,12 @@ User Query
 | Error | Cause | Fix |
 | :--- | :--- | :--- |
 | `[WinError 10013]` on startup | The selected port is already in use | Set `$env:PORT="9000"` |
-| `ModuleNotFoundError: mcp.server.fastmcp` | Old uvx cache / wrong mcp version | Fixed in v1.0.2 via `--with mcp==1.28.1` in uvx args |
+| `ModuleNotFoundError: mcp.server.fastmcp` | Compatibility MCP mode selected without its pinned runtime | Keep `PROVIDER_TRANSPORT=direct` for production; MCP mode is optional |
 | `413 Request too large` | Groq TPM limit exceeded | Fixed in v1.0.2 — final synthesis uses `gpt-oss-20b` |
 | `No module named 'reportlab'` when downloading a PDF | Dependencies were installed from an older or malformed requirements file | Pull the latest code and run `pip install -r requirements.txt` in the active environment |
-| Flights always "unavailable" | AviationStack key missing or uvx crash | Check `AVIATION_STACK_API_KEY` in `.env`; test uvx manually |
+| Flights always "unavailable" | Missing key, endpoint access denial, timeout, or no route-matching records | Run the sanitized provider diagnostic and inspect its typed `error_code` and stage timing |
 | Hotels/weather show raw provider text | Provider evidence reached the UI without relevance and presentation layers | Hotel relevance filtering, safe weather normalization, and dedicated presentation passes now produce end-user Markdown |
-| Hotels show `DEGRADED` and Tavily reports HTTP `429` | Tavily rejected the live search because the API key exceeded its request-rate allowance | Wait briefly and start a new trip. If it happens frequently, check Tavily usage and use a production/PAYGO key; TripBandhu does not blindly retry when MCP omits `Retry-After` |
+| Hotels show `DEGRADED` and Tavily reports HTTP `429` | Tavily rejected the live search because the API key exceeded its request-rate allowance | Wait briefly and start a new trip. If it happens frequently, check Tavily usage and use a production/PAYGO key; TripBandhu retries only a short provider-supplied `Retry-After` interval |
 | Final plan: "could not be generated" | Groq rate limit / TPM exceeded | Wait 1 min (TPM reset) then retry |
 | LangSmith `403 Forbidden` or multipart ingest failures | Tracing key, workspace, or regional endpoint does not match | Keep `LANGSMITH_TRACING=false`, or configure the endpoint/workspace for the key before enabling tracing |
 | Browser still shows an older UI/PDF behavior | Cached static assets from an earlier deploy | Hard-refresh the page; deployed assets are commit-versioned |
@@ -397,10 +393,11 @@ User Query
 ```
 TripBandhu/
 ├── .github/workflows/ci.yml          # GitHub Actions CI
+├── .github/workflows/deployment-smoke.yml # Manual public release verification
 ├── eval/
 │   ├── eval_dataset.py               # 50-case benchmark dataset (v3.1.0)
 │   └── evaluator.py                  # FAST / POSTGRES benchmark harness
-├── tests/                            # 137 fast tests + PostgreSQL integration test
+├── tests/                            # Unit, contract, PDF, provider & PostgreSQL tests
 ├── docs/assets/portfolio/            # UI screenshots
 ├── static/
 │   ├── script.js                     # Frontend logic, HITL, PDF export
@@ -408,14 +405,18 @@ TripBandhu/
 ├── templates/index.html              # Single-page app shell
 ├── app.py                            # FastAPI server & endpoints
 ├── backend.py                        # LangGraph graph + all agent functions
-├── mcp_client.py                     # MCP server configs & tool adapters
+├── mcp_client.py                     # Direct-provider facade + optional MCP compatibility
+├── provider_adapters.py              # Pooled direct HTTP, validation, cache & circuit breaker
 ├── capability_registry.py            # Evidence normalizers (Tavily, Weather, Flight)
-├── provider_utils.py                 # Async MCP call wrapper (timeout + retry)
+├── provider_utils.py                 # Typed timeout/retry/trace wrapper
 ├── pdf_generator.py                  # Validated server-side itinerary PDF renderer
 ├── agent_config.py                   # Timeouts, token budgets, model assignments
 ├── llm_utils.py                      # LLM invocation with rate-limit handling
 ├── schemas.py                        # Typed evidence, error codes, state schemas
 ├── custom_weather_mcp_server.py      # OpenWeather MCP server (FastMCP stdio)
+├── scripts/
+│   ├── deployment_smoke.py           # Public build/assets/PDF contract
+│   └── provider_diagnostics.py       # Sanitized live-provider probe
 ├── project_config.py                 # Path resolution
 ├── requirements.txt
 ├── requirements-dev.txt              # CI-pinned test dependencies
