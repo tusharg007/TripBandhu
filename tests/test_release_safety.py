@@ -45,6 +45,9 @@ class ReleaseSafetyTest(unittest.TestCase):
         self.assertIn("dompurify@3.2.6", template)
         self.assertIn("/api/travel/resume", script)
         self.assertIn("/api/travel/download-pdf", script)
+        self.assertIn("PLAN_STORAGE_KEY", script)
+        self.assertIn("latestPlanReference", script)
+        self.assertNotIn("JSON.stringify({ text:", script)
         self.assertIn("DOMPurify.sanitize", script)
         self.assertNotIn("html2pdf.bundle.min.js", template)
 

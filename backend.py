@@ -1564,6 +1564,9 @@ def _serialize_result(result: dict[str, Any], thread_id: str) -> dict[str, Any]:
         "llm_calls": result.get("llm_calls", 0),
         "llm_token_usage": result.get("llm_token_usage", {}),  # Phase 8: internal trace
         "run_status": result.get("run_status", RunStatus.COMPLETED.value),
+        # Server-only hand-off for approval/export persistence. app.py omits this
+        # internal field from the public response contract.
+        "_evidence_store": result.get("evidence_store", {}),
     }
 
 

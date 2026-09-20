@@ -100,3 +100,13 @@ RATE_LIMIT_DEFAULT_RETRY_WAIT_SECONDS: float = 2.0   # When Retry-After header a
 # HITL review loop
 # ---------------------------------------------------------------------------
 MAX_REVIEW_ITERATIONS: int = 10
+
+# ---------------------------------------------------------------------------
+# HTTP application safeguards
+# ---------------------------------------------------------------------------
+# These controls prevent a single browser session from exhausting shared free-tier
+# provider quotas. They are intentionally modest and env-overridable.
+MAX_CONCURRENT_TRIPS: int = max(1, int(os.getenv("MAX_CONCURRENT_TRIPS", "2")))
+SESSION_REQUEST_LIMIT: int = max(1, int(os.getenv("SESSION_REQUEST_LIMIT", "8")))
+SESSION_REQUEST_WINDOW_SECONDS: int = max(60, int(os.getenv("SESSION_REQUEST_WINDOW_SECONDS", "3600")))
+REQUIRE_PERSISTENT_STORAGE: bool = os.getenv("REQUIRE_PERSISTENT_STORAGE", "false").strip().casefold() in {"1", "true", "yes"}

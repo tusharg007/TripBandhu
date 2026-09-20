@@ -37,6 +37,12 @@ The same check can be run manually from the **TripBandhu Deployment Smoke** GitH
 | ![Specialist Tabs](docs/assets/portfolio/evidence-specialists.png) | ![Final Plan](docs/assets/portfolio/final-plan.png) |
 | *Live AviationStack, Tavily, and OpenWeather typed evidence tabs.* | *Traveler-approved synthesis with copyable markdown & PDF export.* |
 
+### Approved itinerary exports
+
+TripBandhu exports only a complete itinerary after the traveler approves it. The browser sends an opaque plan ID and version—not rendered HTML or arbitrary text—and the server renders a selectable, paginated travel proposal from the saved structured document. The proposal includes a cover, day-by-day sections, any parsed planning budget lines, source notes, a watermark, page numbers, and a booking-verification checklist. It never starts another LLM or provider call on repeat download.
+
+Approved plans are session-bound. With a reachable `DATABASE_URL`, documents and cached PDFs survive an application restart in PostgreSQL. Without a database, the app deliberately falls back to memory mode: it works for the active process but an approved export is unavailable after a restart. Do not enable `REQUIRE_PERSISTENT_STORAGE=true` until the Render Postgres instance is restored.
+
 ---
 
 ## 🎯 Why TripBandhu Exists
@@ -311,6 +317,11 @@ python -m eval.evaluator --postgres
 | `OPENWEATHER_API_KEY` | Optional | — | Weather data |
 | `PROVIDER_TRANSPORT` | Optional | `direct` | `direct` for production HTTPS adapters; `mcp` only for compatibility diagnostics |
 | `DATABASE_URL` | Optional | `""` | PostgreSQL connection string |
+| `SESSION_SIGNING_SECRET` | Recommended in production | Per-process random fallback | HMAC key for the browser's HttpOnly plan-session cookie; rotate intentionally |
+| `MAX_CONCURRENT_TRIPS` | Optional | `2` | Max active planning graph runs per app instance |
+| `SESSION_REQUEST_LIMIT` | Optional | `8` | New-trip requests allowed per browser session/window on an instance |
+| `SESSION_REQUEST_WINDOW_SECONDS` | Optional | `3600` | Request-limit window in seconds |
+| `REQUIRE_PERSISTENT_STORAGE` | Optional | `false` | Make `/health/ready` fail until both the checkpointer and approved-export store use PostgreSQL |
 | `PORT` | Optional | `8080` | Server port (Render sets this automatically) |
 | `MAX_REVIEW_ITERATIONS` | Optional | `10` | Max HITL revision cycles |
 | `LANGSMITH_TRACING` | Optional | `false` | Enable LangSmith tracing |
@@ -366,6 +377,8 @@ User Query
 | Benchmark FAST mode (49 cases) | ✅ 49 / 49 passed |
 | Live direct-provider diagnostic | ✅ AviationStack, Tavily, current weather, and daily forecast returned validated evidence |
 | Public deployment/PDF smoke | ✅ Build SHA, assets, ReportLab producer, attachment response, and PDF content verified |
+| Approved-version PDF contract | ✅ Server accepts plan ID/version only; download is session-bound, cached, and rendered from a typed approved document |
+| Readiness surface | ✅ `/health/live` has no dependency calls; `/health/ready` reports database/export mode without secrets |
 | Live HITL validation on Render | ✅ Draft and approval completed on build `18f9928` |
 | PostgreSQL persistence | ⚠️ CI uses isolated PostgreSQL; the current Render database is suspended and must be restored for durable live sessions |
 
@@ -379,6 +392,7 @@ User Query
 | `ModuleNotFoundError: mcp.server.fastmcp` | Compatibility MCP mode selected without its pinned runtime | Keep `PROVIDER_TRANSPORT=direct` for production; MCP mode is optional |
 | `413 Request too large` | Groq TPM limit exceeded | Fixed in v1.0.2 — final synthesis uses `gpt-oss-20b` |
 | `No module named 'reportlab'` when downloading a PDF | Dependencies were installed from an older or malformed requirements file | Pull the latest code and run `pip install -r requirements.txt` in the active environment |
+| PDF says the approved plan is unavailable after an app restart | The service is running in intentional memory fallback because PostgreSQL is not reachable | Restore `DATABASE_URL`/Render Postgres and verify `/health/ready` reports `persistent_storage: true` |
 | Flights always "unavailable" | Missing key, endpoint access denial, timeout, or no route-matching records | Run the sanitized provider diagnostic and inspect its typed `error_code` and stage timing |
 | Hotels/weather show raw provider text | Provider evidence reached the UI without relevance and presentation layers | Hotel relevance filtering, safe weather normalization, and dedicated presentation passes now produce end-user Markdown |
 | Hotels show `DEGRADED` and Tavily reports HTTP `429` | Tavily rejected the live search because the API key exceeded its request-rate allowance | Wait briefly and start a new trip. If it happens frequently, check Tavily usage and use a production/PAYGO key; TripBandhu retries only a short provider-supplied `Retry-After` interval |

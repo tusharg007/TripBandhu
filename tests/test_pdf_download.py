@@ -118,22 +118,22 @@ class PdfGeneratorTests(unittest.TestCase):
     def test_api_returns_downloadable_pdf_with_security_headers(self):
         client = TestClient(app.app)
         response = client.post("/api/travel/download-pdf", json={
-            "text": SAMPLE_ITINERARY,
-            "title": "Delhi to Jaipur Cultural Escape",
+            "plan_id": "__tripbandhu_pdf_smoke__",
+            "version": 1,
         })
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "application/pdf")
         self.assertTrue(response.content.startswith(b"%PDF-"))
         self.assertIn("attachment", response.headers["content-disposition"])
-        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertIn("no-store", response.headers["cache-control"])
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
 
     def test_api_rejects_whitespace_only_content(self):
         client = TestClient(app.app)
-        response = client.post("/api/travel/download-pdf", json={"text": "   "})
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["error_code"], "INVALID_PDF_CONTENT")
+        response = client.post("/api/travel/download-pdf", json={"plan_id": "unknown-plan", "version": 1})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error_code"], "PLAN_NOT_FOUND")
 
 
 if __name__ == "__main__":

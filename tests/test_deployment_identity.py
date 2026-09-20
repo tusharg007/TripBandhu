@@ -13,7 +13,7 @@ from pypdf import PdfReader
 import app
 import backend
 from agent_config import PROVIDER_TIMEOUT_SECONDS
-from deployment_info import APP_VERSION, PROVIDER_CONFIG_VERSION
+from deployment_info import APP_VERSION, PDF_RENDERER_VERSION, PROVIDER_CONFIG_VERSION
 
 
 def test_version_exposes_safe_build_contract():
@@ -28,7 +28,7 @@ def test_version_exposes_safe_build_contract():
         "app_version": APP_VERSION,
         "build_sha": commit,
         "asset_version": commit[:12],
-        "pdf_renderer": "reportlab-v1",
+        "pdf_renderer": PDF_RENDERER_VERSION,
         "provider_config_version": PROVIDER_CONFIG_VERSION,
         "public_schema_version": "1",
         "environment": "render",
@@ -54,17 +54,17 @@ def test_download_identifies_reportlab_and_contains_selectable_text():
         response = TestClient(app.app).post(
             "/api/travel/download-pdf",
             json={
-                "title": "Deployment PDF Check",
-                "text": "# Deployment PDF Check\n\n## Day 1\n- Arrive in Delhi.",
+                "plan_id": "__tripbandhu_pdf_smoke__",
+                "version": 1,
             },
         )
 
+    assert response.status_code == 200
     reader = PdfReader(BytesIO(response.content))
     extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
-    assert response.status_code == 200
     assert response.headers["x-tripbandhu-build"] == commit
     assert "ReportLab" in str(reader.metadata.producer)
-    assert "Arrive in Delhi" in extracted
+    assert "Verify the server-side PDF renderer" in extracted
     assert all((page.extract_text() or "").strip() for page in reader.pages)
 
 

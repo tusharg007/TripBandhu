@@ -12,7 +12,7 @@ from project_config import PROJECT_ROOT
 
 APP_VERSION = "1.1.0"
 PUBLIC_SCHEMA_VERSION = "1"
-PDF_RENDERER_VERSION = "reportlab-v1"
+PDF_RENDERER_VERSION = "professional-reportlab-v2"
 PROVIDER_CONFIG_VERSION = "direct-provider-adapters-v1"
 
 _BUILD_ENV_NAMES = (

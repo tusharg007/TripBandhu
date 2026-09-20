@@ -1,6 +1,6 @@
 # TripBandhu: reliable evidence and professional itinerary exports
 
-Prepared 15 September 2026. This plan is based on inspected code, the supplied PDF and trace, and read-only checks of the public Render service. Phase 0 application and verification changes are now implemented in the repository; the public deployment still has to be proven against the resulting commit. Live provider repair and the later document/export phases remain pending.
+Prepared 15 September 2026; implementation status updated 21 September 2026. This plan is based on inspected code, the supplied PDF and trace, and read-only checks of the public Render service. Phase 0 and Phase 1 are implemented and previously verified on their noted build. Phases 2–5 are now implemented locally and require deployment of the new commit plus a restored Render PostgreSQL service for durable-production acceptance.
 
 ## 1. Findings and confidence
 
@@ -112,6 +112,8 @@ Primary areas: `schemas.py`, `backend.py`, `llm_utils.py`, new itinerary validat
 
 Acceptance: the supplied currency error and truncated draft fail validation; all requested days survive approval and export; exported version/hash equals the displayed approved version; no additional LLM is needed for repeat downloads.
 
+Implementation status: implemented locally. `ItineraryDocument` is a versioned Pydantic contract with contiguous-day validation, approval state, content hashing, source notes, warning severity, and Decimal-backed planning-budget line items. A missing requested day becomes a visible validation warning and cannot be saved/exported. The export boundary rejects non-approved or incomplete documents rather than inventing omitted content.
+
 ### Phase 3: design and build the travel-agency PDF
 
 Primary areas: `pdf_generator.py`, bundled fonts/assets, export endpoint and tests.
@@ -132,6 +134,8 @@ Images: begin with a small curated library of licensed, destination-verified pho
 
 Acceptance: inspect every rendered page for 3-, 5-, 7-, 14- and 30-day fixtures; zero blank pages, clipping, overlap or missing days. Text is selectable/searchable; links work; INR and multilingual names render; the document remains attractive without images. Compare extracted content to the canonical approved document, not just the PDF header or file size.
 
+Implementation status: implemented locally with a dedicated ReportLab renderer, not a website screenshot. The renderer has a travel-proposal cover, route/duration cards, day blocks, planning-budget table, source notes, page numbering, subtle watermark, and booking-verification language. A rendered multi-day QA PDF was inspected for pagination and text extraction. Broader 5/7/14/30-day visual fixture review remains a deployment/release acceptance task.
+
 ### Phase 4: store and serve approved exports
 
 Primary areas: `app.py`, `static/script.js`, PostgreSQL artifact records, optional `artifact_storage.py`.
@@ -146,6 +150,8 @@ Acceptance: download works after refresh/restart; versions cannot be mixed; anot
 
 The Cortex project was not found among the top-level F: directories during this inspection. Its implementation has not been reviewed. If its checkout becomes available, review only its artifact storage/download pattern and adapt that to TripBandhu's authorization and versioning requirements.
 
+Implementation status: implemented locally with authenticated direct streaming first. A signed HttpOnly browser session owns a thread and immutable approved plan/version. The export API accepts only that plan reference, authorizes ownership before rendering, and caches renderer/asset-version PDF bytes. PostgreSQL tables persist thread ownership, document JSON, and PDF bytes when `DATABASE_URL` is reachable; a clearly marked in-memory fallback is used otherwise. S3 is intentionally deferred: it is useful only for sharing/large artifact retention and does not correct generation quality.
+
 ### Phase 5: operate reliably on Render
 
 1. Keep Render's container deployment. Separate liveness, readiness and restricted dependency diagnostics; health polling must not repeatedly consume API quota.
@@ -154,6 +160,8 @@ The Cortex project was not found among the top-level F: directories during this 
 4. Keep database and application regions close, bound pools, and validate concurrent PDF memory/CPU usage. Pin and prebuild required dependencies and assets. Add readiness checks for the renderer/fonts and database migrations.
 5. Instrument build version, stage latency, normalized evidence count, failure category, token usage, completion reason, export duration and artifact version. Restrict trace access and redact credentials and unnecessary personal data before export.
 6. Establish a staged release: deterministic CI, Docker parity tests, limited live provider probes, deployed end-to-end approval/download, then public rollout. Roll back on verified regressions, preserving approved document versions.
+
+Implementation status: local safeguards are in place: bounded per-instance trip concurrency, per-session request limiting, session cookies, `/health/live`, and dependency-mode `/health/ready`. The readiness endpoint can be configured to fail closed with `REQUIRE_PERSISTENT_STORAGE=true`. A durable distributed queue/rate limiter is not appropriate to simulate on a single free Render instance; it requires a restored PostgreSQL/Redis-backed worker deployment and is therefore an explicit production infrastructure follow-up rather than an untrue completion claim.
 
 Render Free remains suitable for a portfolio demo, but its documented idle spin-down and resource restrictions prevent an always-on production guarantee. Use a constrained demo mode if staying free: explicit cold-start/loading state, low concurrency, cached evidence with timestamps, and truthful unavailable states. Paid hosting will not itself create missing provider entitlements or make unverified claims correct.
 

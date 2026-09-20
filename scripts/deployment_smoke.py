@@ -11,14 +11,7 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 
-SMOKE_MARKDOWN = """# TripBandhu Deployment Check
-
-## Day 1 - Arrival
-- Verify the published server-side PDF renderer.
-
-## Day 2 - Departure
-- Confirm that the document is complete and readable.
-"""
+SMOKE_PLAN_ID = "__tripbandhu_pdf_smoke__"
 
 
 class SmokeCheckError(RuntimeError):
@@ -91,7 +84,7 @@ def verify_deployment(base_url: str, expected_sha: str = "") -> dict[str, object
 
     with _request(
         urljoin(base_url, "api/travel/download-pdf"),
-        payload={"text": SMOKE_MARKDOWN, "title": "TripBandhu Deployment Check"},
+        payload={"plan_id": SMOKE_PLAN_ID, "version": 1},
     ) as response:
         pdf = response.read()
         content_type = response.headers.get("Content-Type", "")

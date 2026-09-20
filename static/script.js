@@ -1,4 +1,5 @@
 const THREAD_STORAGE_KEY = "travel_thread_id";
+const PLAN_STORAGE_KEY = "tripbandhu_approved_plan";
 
 const agentDefinitions = [
     ["supervisor", "Supervisor"],
@@ -19,6 +20,13 @@ const tabDefinitions = [
 ];
 
 let currentThreadId = localStorage.getItem(THREAD_STORAGE_KEY) || null;
+let latestPlanReference = (() => {
+    try {
+        return JSON.parse(localStorage.getItem(PLAN_STORAGE_KEY) || "null");
+    } catch (_error) {
+        return null;
+    }
+})();
 let latestAnswerMarkdown = "";
 let latestResponse = null;
 let activeTabKey = "flight_results";
@@ -93,8 +101,10 @@ function resetTrip() {
     currentThreadId = null;
     latestAnswerMarkdown = "";
     latestResponse = null;
+    latestPlanReference = null;
     activeTabKey = "flight_results";
     localStorage.removeItem(THREAD_STORAGE_KEY);
+    localStorage.removeItem(PLAN_STORAGE_KEY);
 
     byId("userInput").value = "";
     byId("revisionFeedback").value = "";
@@ -278,6 +288,13 @@ function renderResponse(data) {
     if (currentThreadId) {
         localStorage.setItem(THREAD_STORAGE_KEY, currentThreadId);
     }
+    if (data.plan_id && data.plan_version) {
+        latestPlanReference = {
+            plan_id: data.plan_id,
+            version: data.plan_version,
+        };
+        localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(latestPlanReference));
+    }
 
     hideError();
     showElement(byId("workflowSection"), true);
@@ -395,17 +412,8 @@ function copyResult() {
 }
 
 async function downloadPDF() {
-    // Primary source: in-memory markdown from the last API response.
-    // Fallback: read plaintext from the rendered result box (survives page refresh
-    // but loses markdown formatting — still produces a valid readable PDF).
-    let content = latestAnswerMarkdown;
-    if (!content) {
-        const resultBox = byId("resultBox");
-        content = resultBox ? (resultBox.innerText || "").trim() : "";
-    }
-
-    if (!content) {
-        alert("No final travel plan is available to download yet.\nPlease run a trip query first.");
+    if (!latestPlanReference || !latestPlanReference.plan_id || !latestPlanReference.version) {
+        alert("Approve a complete itinerary before downloading its PDF.\nTripBandhu exports the saved approved version, not browser text.");
         return;
     }
 
@@ -414,16 +422,13 @@ async function downloadPDF() {
     downloadBtn.textContent = "Preparing PDF...";
     downloadBtn.disabled = true;
 
-    const titleMatch = content.match(/^#+ (.+)/m);
-    const title = titleMatch ? titleMatch[1].trim() : "TripBandhu Travel Plan";
-
     hideError();
 
     try {
         const response = await fetch("/api/travel/download-pdf", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: content, title }),
+            body: JSON.stringify(latestPlanReference),
         });
 
         if (!response.ok) {

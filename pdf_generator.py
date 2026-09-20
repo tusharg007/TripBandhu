@@ -18,14 +18,19 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
 from reportlab.platypus import (
     HRFlowable,
+    KeepTogether,
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
     Table,
     TableStyle,
 )
+
+from itinerary_document import ItineraryDocument
 
 
 MAX_PDF_TEXT_LENGTH = 100_000
@@ -36,6 +41,9 @@ BRAND_YELLOW = colors.HexColor("#F6C90E")
 INK = colors.HexColor("#17201D")
 MUTED = colors.HexColor("#5F6B66")
 RULE = colors.HexColor("#D9DED8")
+CREAM = colors.HexColor("#F7F2E8")
+GOLD = colors.HexColor("#C79A2B")
+SOFT_GREEN = colors.HexColor("#E6F0E9")
 _FONT_REGISTRATION_LOCK = Lock()
 
 
@@ -412,6 +420,243 @@ def build_itinerary_pdf(
     _append_markdown(story, normalized_text, styles, document.width, normalized_title)
 
     document.build(story, onFirstPage=_draw_page, onLaterPages=_draw_page)
+    pdf_bytes = buffer.getvalue()
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise RuntimeError("The PDF renderer returned an invalid document.")
+    return pdf_bytes
+
+
+class _NumberedTripCanvas(canvas.Canvas):
+    """Delayed canvas to print a reliable Page X of Y footer."""
+
+    def __init__(self, *args, trip_title: str = "TripBandhu Travel Proposal", **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_page_states: list[dict] = []
+        self.trip_title = trip_title
+
+    def showPage(self):  # noqa: N802 - ReportLab API spelling
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        page_count = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self._draw_page_number(page_count)
+            super().showPage()
+        super().save()
+
+    def _draw_page_number(self, page_count: int) -> None:
+        width, _ = A4
+        self.saveState()
+        self.setStrokeColor(RULE)
+        self.line(18 * mm, 13 * mm, width - 18 * mm, 13 * mm)
+        self.setFont("Helvetica", 7.5)
+        self.setFillColor(MUTED)
+        self.drawString(18 * mm, 8.5 * mm, "TripBandhu - Travel Proposal - Not a booking confirmation")
+        self.drawRightString(width - 18 * mm, 8.5 * mm, f"Page {self._pageNumber} of {page_count}")
+        self.restoreState()
+
+
+def _draw_professional_page(canvas_obj, doc) -> None:
+    width, height = A4
+    canvas_obj.saveState()
+    canvas_obj.setFillColor(BRAND_GREEN)
+    canvas_obj.rect(0, height - 5 * mm, width, 5 * mm, fill=1, stroke=0)
+    canvas_obj.setFillColor(GOLD)
+    canvas_obj.rect(0, height - 6.2 * mm, width, 1.2 * mm, fill=1, stroke=0)
+    # A subtle typographic watermark avoids pretending a stock photo is evidence.
+    canvas_obj.setFillColor(colors.Color(0.02, 0.31, 0.23, alpha=0.035))
+    canvas_obj.setFont("Helvetica-Bold", 38)
+    canvas_obj.translate(width / 2, height / 2)
+    canvas_obj.rotate(35)
+    canvas_obj.drawCentredString(0, 0, "TRIPBANDHU")
+    canvas_obj.restoreState()
+
+
+def _card(label: str, value: str, styles: dict[str, ParagraphStyle]) -> Table:
+    table = Table(
+        [[Paragraph(_inline_markup(label.upper()), styles["meta"])], [Paragraph(_inline_markup(value), styles["body"])]],
+        colWidths=[82 * mm],
+        style=TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+            ("BOX", (0, 0), (-1, -1), 0.6, RULE),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, 0), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]),
+    )
+    return table
+
+
+def _day_block(day, styles: dict[str, ParagraphStyle]) -> list:
+    story: list = [
+        KeepTogether([
+            Paragraph(f"DAY {day.day}", styles["meta"]),
+            Paragraph(_inline_markup(day.title), styles["h1"]),
+            HRFlowable(width="100%", thickness=0.7, color=GOLD, spaceAfter=3),
+        ])
+    ]
+    periods = (("Morning", day.morning), ("Afternoon", day.afternoon), ("Evening", day.evening))
+    rendered_period = False
+    for label, items in periods:
+        if not items:
+            continue
+        rendered_period = True
+        story.append(Paragraph(label, styles["h2"]))
+        for item in items:
+            story.append(Paragraph(f"- {_inline_markup(item)}", styles["bullet"]))
+    if day.highlights:
+        if rendered_period:
+            story.append(Paragraph("Notes and highlights", styles["h2"]))
+        for item in day.highlights:
+            story.append(Paragraph(f"- {_inline_markup(item)}", styles["bullet"]))
+    if day.accommodation_note:
+        story.append(Paragraph(f"<b>Stay:</b> {_inline_markup(day.accommodation_note)}", styles["body"]))
+    if day.transport_note:
+        story.append(Paragraph(f"<b>Transport:</b> {_inline_markup(day.transport_note)}", styles["body"]))
+    story.append(Spacer(1, 3 * mm))
+    return story
+
+
+def build_professional_itinerary_pdf(
+    itinerary: ItineraryDocument,
+    *,
+    generated_at: datetime | None = None,
+) -> bytes:
+    """Render a typed, approved itinerary as a travel-proposal PDF.
+
+    This renderer has no network, LLM, or browser dependency.  It deliberately
+    uses proposal language and preserves source/warning metadata from the
+    approved document rather than fabricating confirmation details.
+    """
+    if not itinerary.approved or not itinerary.is_complete:
+        raise PdfContentError("Only a complete, approved itinerary version can be exported.")
+
+    regular_font, bold_font = _register_fonts()
+    styles = _make_styles(regular_font, bold_font)
+    timestamp = generated_at or datetime.now().astimezone()
+    destination_label = ", ".join(itinerary.destinations) or "Your destination"
+    route = " -> ".join(part for part in (itinerary.origin, destination_label) if part) or destination_label
+    duration = f"{itinerary.duration_days} days" if itinerary.duration_days else "Planning duration"
+    travelers = f"{itinerary.traveler_count} traveler(s)" if itinerary.traveler_count else "Traveler count to confirm"
+
+    buffer = BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        title=normalize_pdf_text(itinerary.title),
+        author="TripBandhu",
+        subject="Approved travel proposal",
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=18 * mm,
+        bottomMargin=20 * mm,
+        pageCompression=1,
+    )
+    cover_brand = ParagraphStyle(
+        "TripBandhuCoverBrand", parent=styles["meta"], fontName=bold_font,
+        fontSize=10, leading=13, textColor=BRAND_GREEN, alignment=TA_CENTER,
+    )
+    cover_title = ParagraphStyle(
+        "TripBandhuCoverTitle", parent=styles["title"], fontName=bold_font,
+        fontSize=28, leading=33, textColor=BRAND_GREEN, alignment=TA_CENTER, spaceAfter=8,
+    )
+    cover_subtitle = ParagraphStyle(
+        "TripBandhuCoverSubtitle", parent=styles["meta"], fontName=regular_font,
+        fontSize=11, leading=16, textColor=MUTED, alignment=TA_CENTER,
+    )
+    story: list = [
+        Spacer(1, 24 * mm),
+        Paragraph("TRIPBANDHU", cover_brand),
+        Spacer(1, 4 * mm),
+        Paragraph("TRAVEL PROPOSAL", cover_brand),
+        Spacer(1, 17 * mm),
+        Paragraph(_inline_markup(itinerary.title), cover_title),
+        Paragraph(_inline_markup(route), cover_subtitle),
+        Spacer(1, 12 * mm),
+        Table(
+            [[
+                _card("Duration", duration, styles),
+                _card("Travelers", travelers, styles),
+            ], [
+                _card("Dates", itinerary.travel_dates or "Dates to confirm", styles),
+                _card("Reference", itinerary.plan_id[-12:].upper(), styles),
+            ]],
+            colWidths=[85 * mm, 85 * mm],
+            style=TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]),
+        ),
+        Spacer(1, 15 * mm),
+        Paragraph("Prepared for planning and review. This document is not a booking confirmation.", cover_subtitle),
+        Spacer(1, 3 * mm),
+        Paragraph(f"Approved {timestamp.strftime('%d %b %Y, %I:%M %p %Z')}", styles["meta"]),
+        PageBreak(),
+        Paragraph("Trip at a glance", styles["h1"]),
+        Paragraph(f"<b>Route:</b> {_inline_markup(route)}", styles["body"]),
+        Paragraph(f"<b>Accommodation assumption:</b> {_inline_markup(itinerary.room_assumptions)}", styles["body"]),
+        Paragraph("Daily itinerary", styles["h1"]),
+    ]
+
+    for day in itinerary.days:
+        story.extend(_day_block(day, styles))
+
+    story.extend([Paragraph("Budget planning guide", styles["h1"])])
+    if itinerary.budget.line_items:
+        rows = [[
+            Paragraph("Category", styles["table_header"]),
+            Paragraph("Planning range", styles["table_header"]),
+            Paragraph("Unit / status", styles["table_header"]),
+        ]]
+        for item in itinerary.budget.line_items:
+            lower = item.amount_low if item.amount_low is not None else Decimal("0")
+            upper = item.amount_high if item.amount_high is not None else lower
+            amount = f"{item.currency} {lower:,.0f}" if lower == upper else f"{item.currency} {lower:,.0f} - {upper:,.0f}"
+            rows.append([
+                Paragraph(_inline_markup(item.category), styles["table"]),
+                Paragraph(_inline_markup(amount), styles["table"]),
+                Paragraph(_inline_markup(f"{item.unit}; {item.estimate_status}"), styles["table"]),
+            ])
+        budget_table = Table(rows, colWidths=[58 * mm, 52 * mm, 60 * mm], repeatRows=1, hAlign="LEFT")
+        budget_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), BRAND_GREEN),
+            ("BACKGROUND", (0, 1), (-1, -1), CREAM),
+            ("GRID", (0, 0), (-1, -1), 0.35, RULE),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.extend([budget_table, Spacer(1, 4 * mm)])
+    else:
+        story.append(Paragraph("No verified line-item budget was captured. Treat all cost references as planning estimates and verify them before booking.", styles["body"]))
+
+    story.extend([Paragraph("Booking checklist and important notes", styles["h1"])])
+    for warning in itinerary.warnings:
+        story.append(Paragraph(f"- {_inline_markup(warning.message)}", styles["bullet"]))
+    story.append(Paragraph("- Recheck live schedules, availability, prices, opening hours, visa rules, and local advisories before committing to reservations.", styles["bullet"]))
+
+    if itinerary.sources:
+        story.extend([PageBreak(), Paragraph("Evidence and source notes", styles["h1"])])
+        for source in itinerary.sources:
+            label = f"<b>{_inline_markup(source.provider)}:</b> {_inline_markup(source.title)}"
+            if source.url:
+                label += f" - {_inline_markup(source.url)}"
+            if source.retrieved_at:
+                label += f" (retrieved { _inline_markup(source.retrieved_at) })"
+            story.append(Paragraph(label, styles["body"]))
+
+    def _canvasmaker(*args, **kwargs):
+        return _NumberedTripCanvas(*args, trip_title=itinerary.title, **kwargs)
+
+    document.build(story, onFirstPage=_draw_professional_page, onLaterPages=_draw_professional_page, canvasmaker=_canvasmaker)
     pdf_bytes = buffer.getvalue()
     if not pdf_bytes.startswith(b"%PDF-"):
         raise RuntimeError("The PDF renderer returned an invalid document.")
