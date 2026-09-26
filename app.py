@@ -21,7 +21,14 @@ from backend import (
 from project_config import PROJECT_ROOT
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.memory import InMemorySaver
-from artifact_store import ArtifactStore, SESSION_COOKIE_NAME, new_session_id, sign_session_id, verify_signed_session
+from artifact_store import (
+    ArtifactStore,
+    SESSION_COOKIE_NAME,
+    new_session_id,
+    session_security_status,
+    sign_session_id,
+    verify_signed_session,
+)
 from itinerary_document import ItineraryValidationError, build_itinerary_document
 from pdf_generator import PdfContentError, build_professional_itinerary_pdf
 from deployment_info import APP_VERSION, PDF_RENDERER_VERSION, get_asset_version, get_build_sha, get_deployment_info
@@ -51,6 +58,8 @@ async def lifespan(app: FastAPI):
         request_window_seconds=SESSION_REQUEST_WINDOW_SECONDS,
     )
     await artifact_store.initialize()
+    if _is_render_environment() and not session_security_status()["configured"]:
+        print("[lifespan] SESSION_SIGNING_SECRET is missing or shorter than 32 characters.", flush=True)
     app.state.artifact_store = artifact_store
     app.state.trip_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TRIPS)
     try:
@@ -235,6 +244,10 @@ def _artifact_store(request: Request) -> ArtifactStore | None:
 def _safe_download_name(title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", str(title).casefold()).strip("-")[:70]
     return f"{slug or 'tripbandhu-travel-plan'}.pdf"
+
+
+def _is_render_environment() -> bool:
+    return str(os.getenv("RENDER") or "").strip().casefold() in {"1", "true", "yes"}
 
 
 async def _acquire_trip_slot(request: Request) -> bool:
@@ -452,13 +465,18 @@ async def readiness_check(request: Request):
     artifact_status = await store.readiness() if store is not None else {"ready": False, "backend": "unavailable", "persistent": False}
     checkpointer_backend = getattr(request.app.state, "checkpointer_backend", "memory")
     persistence_ready = artifact_status["persistent"] and checkpointer_backend == "postgresql"
-    ready = artifact_status["ready"] and (persistence_ready or not REQUIRE_PERSISTENT_STORAGE)
+    session_status = session_security_status()
+    secure_session_ready = session_status["configured"] or not _is_render_environment()
+    ready = artifact_status["ready"] and secure_session_ready and (persistence_ready or not REQUIRE_PERSISTENT_STORAGE)
+    if _is_render_environment() and not session_status["configured"]:
+        print("[readiness] SESSION_SIGNING_SECRET is missing or shorter than 32 characters.", flush=True)
     content = {
         "status": "ready" if ready else "degraded",
         "ready": ready,
         "checkpointer_backend": checkpointer_backend,
         "artifact_store": artifact_status,
         "persistent_storage": persistence_ready,
+        "session_security": session_status,
         "provider_config_version": get_deployment_info()["provider_config_version"],
     }
     return JSONResponse(content=content, status_code=200 if ready else 503, headers={"Cache-Control": "no-store"})

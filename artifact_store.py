@@ -27,7 +27,18 @@ from itinerary_document import ItineraryDocument, ItineraryValidationError, requ
 
 
 SESSION_COOKIE_NAME = "tripbandhu_session"
-_SIGNING_SECRET = os.getenv("SESSION_SIGNING_SECRET") or secrets.token_urlsafe(48)
+_CONFIGURED_SIGNING_SECRET = str(os.getenv("SESSION_SIGNING_SECRET") or "").strip()
+# A local fallback keeps development and the existing memory mode usable. It is
+# intentionally never reported as production-safe and is regenerated per process.
+SESSION_SIGNING_SECRET_CONFIGURED = len(_CONFIGURED_SIGNING_SECRET) >= 32
+_SIGNING_SECRET = _CONFIGURED_SIGNING_SECRET if SESSION_SIGNING_SECRET_CONFIGURED else secrets.token_urlsafe(48)
+
+
+def session_security_status() -> dict[str, Any]:
+    return {
+        "configured": SESSION_SIGNING_SECRET_CONFIGURED,
+        "source": "external" if SESSION_SIGNING_SECRET_CONFIGURED else "ephemeral",
+    }
 
 
 def new_session_id() -> str:

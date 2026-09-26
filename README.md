@@ -41,7 +41,19 @@ The same check can be run manually from the **TripBandhu Deployment Smoke** GitH
 
 TripBandhu exports only a complete itinerary after the traveler approves it. The browser sends an opaque plan ID and version—not rendered HTML or arbitrary text—and the server renders a selectable, paginated travel proposal from the saved structured document. The proposal includes a cover, day-by-day sections, any parsed planning budget lines, source notes, a watermark, page numbers, and a booking-verification checklist. It never starts another LLM or provider call on repeat download.
 
-Approved plans are session-bound. With a reachable `DATABASE_URL`, documents and cached PDFs survive an application restart in PostgreSQL. Without a database, the app deliberately falls back to memory mode: it works for the active process but an approved export is unavailable after a restart. Do not enable `REQUIRE_PERSISTENT_STORAGE=true` until the Render Postgres instance is restored.
+Approved plans are session-bound. With a reachable `DATABASE_URL`, documents and cached PDFs survive an application restart in PostgreSQL. Without a database, the app deliberately falls back to memory mode: it works for the active process but an approved export is unavailable after a restart. Neon is configured through the same standard PostgreSQL URL; no Neon-specific code or hostname is hardcoded.
+
+### Render + Neon deployment
+
+Create a Neon PostgreSQL project, copy its direct connection string with TLS enabled (`sslmode=require`), and add it to the Render service as `DATABASE_URL`. Use Neon’s direct endpoint for this long-running FastAPI service; LangGraph already manages its application-scoped PostgreSQL pool, so adding Neon’s external pooler would create unnecessary double pooling. Keep `REQUIRE_PERSISTENT_STORAGE=false` for the first deployment.
+
+Set `SESSION_SIGNING_SECRET` to a strong external value. Generate one locally with:
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+After deploying, confirm `/health/live` returns HTTP 200 and `/health/ready` reports `checkpointer_backend: postgresql`, `artifact_store.backend: postgresql`, `persistent_storage: true`, and session security sourced from `external`. Create, approve, and download a plan; redeploy once and verify the same approved plan remains available. Only then set `REQUIRE_PERSISTENT_STORAGE=true` in Render and redeploy. If Neon is unavailable afterward, `/health/live` remains healthy but `/health/ready` returns HTTP 503.
 
 ---
 
@@ -199,8 +211,9 @@ AVIATION_STACK_API_KEY=your_aviationstack_key_here
 OPENWEATHER_API_KEY=your_openweather_key_here
 PROVIDER_TRANSPORT=direct
 
-# PostgreSQL (optional — in-memory used if blank)
-DATABASE_URL=postgresql://postgres:your_password@localhost:5432/tripbandhu
+# PostgreSQL (optional locally — durable deployment value is supplied in Render)
+DATABASE_URL=<paste-Neon-PostgreSQL-URL-with-sslmode-require>
+SESSION_SIGNING_SECRET=<generate-a-long-random-secret-locally>
 
 # LangSmith Observability (optional; enable only after verifying the key/region)
 LANGSMITH_TRACING=false
@@ -316,7 +329,7 @@ python -m eval.evaluator --postgres
 | `AVIATION_STACK_API_KEY` | Optional | — | Observed flight-status records (also accepted as `AVIATIONSTACK_API_KEY`) |
 | `OPENWEATHER_API_KEY` | Optional | — | Weather data |
 | `PROVIDER_TRANSPORT` | Optional | `direct` | `direct` for production HTTPS adapters; `mcp` only for compatibility diagnostics |
-| `DATABASE_URL` | Optional | `""` | PostgreSQL connection string |
+| `DATABASE_URL` | Optional for memory mode; required for durable deployment | `""` | Neon or other PostgreSQL connection string; preserve TLS parameters such as `sslmode=require` |
 | `SESSION_SIGNING_SECRET` | Recommended in production | Per-process random fallback | HMAC key for the browser's HttpOnly plan-session cookie; rotate intentionally |
 | `MAX_CONCURRENT_TRIPS` | Optional | `2` | Max active planning graph runs per app instance |
 | `SESSION_REQUEST_LIMIT` | Optional | `8` | New-trip requests allowed per browser session/window on an instance |
@@ -380,7 +393,7 @@ User Query
 | Approved-version PDF contract | ✅ Server accepts plan ID/version only; download is session-bound, cached, and rendered from a typed approved document |
 | Readiness surface | ✅ `/health/live` has no dependency calls; `/health/ready` reports database/export mode without secrets |
 | Live HITL validation on Render | ✅ Draft and approval completed on build `18f9928` |
-| PostgreSQL persistence | ⚠️ CI uses isolated PostgreSQL; the current Render database is suspended and must be restored for durable live sessions |
+| PostgreSQL persistence | ⚠️ CI uses isolated PostgreSQL; configure a new Neon database in Render and complete the restart-survival check before enabling required persistence |
 
 ---
 
@@ -392,7 +405,7 @@ User Query
 | `ModuleNotFoundError: mcp.server.fastmcp` | Compatibility MCP mode selected without its pinned runtime | Keep `PROVIDER_TRANSPORT=direct` for production; MCP mode is optional |
 | `413 Request too large` | Groq TPM limit exceeded | Fixed in v1.0.2 — final synthesis uses `gpt-oss-20b` |
 | `No module named 'reportlab'` when downloading a PDF | Dependencies were installed from an older or malformed requirements file | Pull the latest code and run `pip install -r requirements.txt` in the active environment |
-| PDF says the approved plan is unavailable after an app restart | The service is running in intentional memory fallback because PostgreSQL is not reachable | Restore `DATABASE_URL`/Render Postgres and verify `/health/ready` reports `persistent_storage: true` |
+| PDF says the approved plan is unavailable after an app restart | The service is running in intentional memory fallback because PostgreSQL is not reachable | Fix Render’s Neon `DATABASE_URL` and verify `/health/ready` reports `persistent_storage: true` |
 | Flights always "unavailable" | Missing key, endpoint access denial, timeout, or no route-matching records | Run the sanitized provider diagnostic and inspect its typed `error_code` and stage timing |
 | Hotels/weather show raw provider text | Provider evidence reached the UI without relevance and presentation layers | Hotel relevance filtering, safe weather normalization, and dedicated presentation passes now produce end-user Markdown |
 | Hotels show `DEGRADED` and Tavily reports HTTP `429` | Tavily rejected the live search because the API key exceeded its request-rate allowance | Wait briefly and start a new trip. If it happens frequently, check Tavily usage and use a production/PAYGO key; TripBandhu retries only a short provider-supplied `Retry-After` interval |

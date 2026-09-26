@@ -150,7 +150,7 @@ Acceptance: download works after refresh/restart; versions cannot be mixed; anot
 
 The Cortex project was not found among the top-level F: directories during this inspection. Its implementation has not been reviewed. If its checkout becomes available, review only its artifact storage/download pattern and adapt that to TripBandhu's authorization and versioning requirements.
 
-Implementation status: implemented locally with authenticated direct streaming first. A signed HttpOnly browser session owns a thread and immutable approved plan/version. The export API accepts only that plan reference, authorizes ownership before rendering, and caches renderer/asset-version PDF bytes. PostgreSQL tables persist thread ownership, document JSON, and PDF bytes when `DATABASE_URL` is reachable; a clearly marked in-memory fallback is used otherwise. S3 is intentionally deferred: it is useful only for sharing/large artifact retention and does not correct generation quality.
+Implementation status: implemented locally with authenticated direct streaming first. A signed HttpOnly browser session owns a thread and immutable approved plan/version. The export API accepts only that plan reference, authorizes ownership before rendering, and caches renderer/asset-version PDF bytes. PostgreSQL tables persist thread ownership, document JSON, and PDF bytes when `DATABASE_URL` is reachable; a clearly marked in-memory fallback is used otherwise. Neon is a configuration-only PostgreSQL replacement for this architecture; S3 is intentionally deferred.
 
 ### Phase 5: operate reliably on Render
 
