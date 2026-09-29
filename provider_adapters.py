@@ -461,10 +461,19 @@ async def search_aviation_flights(tool_args: dict[str, Any] | None = None) -> di
     )
 
 
-def _validate_geocode(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+def _validate_geocode(payload: Any, *, expected_country: str = "") -> dict[str, Any]:
+    if not isinstance(payload, list) or not payload:
         raise ProviderRequestError("weather", ErrorCode.INVALID_RESPONSE)
-    first = payload[0]
+    candidates = [item for item in payload if isinstance(item, dict)]
+    country_code = str(expected_country or "").strip().upper()
+    if country_code:
+        candidates = [
+            item for item in candidates
+            if str(item.get("country") or "").strip().upper() == country_code
+        ]
+    if not candidates:
+        raise ProviderRequestError("weather", ErrorCode.INVALID_RESPONSE)
+    first = candidates[0]
     try:
         latitude = float(first["lat"])
         longitude = float(first["lon"])
@@ -484,7 +493,9 @@ async def geocode_weather_location(city: str) -> dict[str, Any]:
     query = " ".join(str(city or "").split()).strip()
     if not query:
         raise ProviderRequestError("weather", ErrorCode.INVALID_RESPONSE)
-    safe_params = {"q": query, "limit": 1}
+    qualifier = query.rsplit(",", 1)[-1].strip().upper() if "," in query else ""
+    expected_country = qualifier if len(qualifier) == 2 and qualifier.isalpha() else ""
+    safe_params = {"q": query, "limit": 5}
     return await runtime.request_json(
         provider="weather",
         method="GET",
@@ -492,7 +503,7 @@ async def geocode_weather_location(city: str) -> dict[str, Any]:
         cache_key=_cache_key("weather-geocode", safe_params),
         ttl_seconds=PROVIDER_CACHE_TTL_SECONDS["geocode"],
         params={**safe_params, "appid": api_key},
-        validator=_validate_geocode,
+        validator=lambda payload: _validate_geocode(payload, expected_country=expected_country),
     )
 
 

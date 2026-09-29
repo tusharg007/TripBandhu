@@ -38,7 +38,7 @@ MAX_TOKENS_BY_TASK: dict[str, int] = {
     "flight_summary":      1800,
     "hotel_summary":       1400,
     "weather_summary":      900,
-    "budget":              2400,
+    "budget":              1600,
     "itinerary":           3600,
     "revision":            3600,
     "final_synthesis":     3800,

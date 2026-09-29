@@ -146,13 +146,23 @@ class WeatherDestinationPriorityTest(unittest.TestCase):
         async def _forecast_ok(city):
             return "Clear"
 
+        weather_llm = MagicMock()
+        weather_llm.ainvoke = AsyncMock(
+            return_value=AIMessage(content="Sunny in Kyoto. Pack light layers.")
+        )
+
         with patch.object(backend, "extract_destination_async", side_effect=_extract), \
              patch.object(backend, "weather_mcp_search", side_effect=_weather_ok), \
-             patch.object(backend, "forecast_mcp_search", side_effect=_forecast_ok):
+             patch.object(backend, "forecast_mcp_search", side_effect=_forecast_ok), \
+             patch.object(backend, "_llm_weather", weather_llm):
             result = asyncio.run(backend.weather_agent(state))
 
         self.assertTrue(called, "extract_destination_async must be called when destination is absent")
-        self.assertEqual(result["llm_calls"], 1)
+        self.assertEqual(
+            result["llm_calls"],
+            2,
+            "Destination extraction and weather presentation are separate LLM calls",
+        )
 
 
 class RateLimitClassificationTest(unittest.TestCase):

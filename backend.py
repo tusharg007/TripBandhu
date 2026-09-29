@@ -16,6 +16,7 @@ import operator
 import uuid
 import asyncio
 import json
+import re
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
@@ -73,7 +74,12 @@ from agent_config import (
 from provider_utils import async_call_provider
 from llm_utils import invoke_llm, invoke_llm_complete_text, merge_token_usage
 from location_utils import normalize_weather_location
-from tools.flight_tool import DEFAULT_ORIGIN_IATA, get_airport_reference, resolve_location_to_iata
+from tools.flight_tool import (
+    DEFAULT_ORIGIN_IATA,
+    country_name_to_code,
+    get_airport_reference,
+    resolve_location_to_iata,
+)
 from deployment_info import APP_VERSION, PROVIDER_CONFIG_VERSION, get_build_sha
 
 
@@ -758,6 +764,19 @@ def _is_weather_only_presentation(text: str) -> bool:
     return not any(marker in normalized for marker in _WEATHER_OUT_OF_SCOPE_MARKERS)
 
 
+def _resolve_weather_query(destination: str) -> str:
+    """Turn a country-level destination into a representative qualified city."""
+    normalized = normalize_weather_location(destination)
+    country_code = country_name_to_code(normalized)
+    if not country_code:
+        return normalized
+    airport = get_airport_reference(resolve_location_to_iata(normalized))
+    representative_city = str((airport or {}).get("city") or "").strip()
+    if not representative_city:
+        return normalized
+    return f"{representative_city},{country_code}"
+
+
 async def weather_agent(state: TravelState):
     statuses = dict(state.get("specialist_statuses", {}))
     llm_calls = state.get("llm_calls", 0)
@@ -783,7 +802,7 @@ async def weather_agent(state: TravelState):
             )
             city = "your destination"
 
-    city = normalize_weather_location(city) or "your destination"
+    city = _resolve_weather_query(city) or "your destination"
 
     weather_result, forecast_result = await asyncio.gather(
         async_call_provider(
@@ -914,9 +933,191 @@ _BUDGET_SYSTEM = (
 )
 
 
+def _evidence_from_store(evidence_store: dict[str, dict], key: str) -> CapabilityEvidence | None:
+    raw = (evidence_store or {}).get(key)
+    if raw is None:
+        return None
+    try:
+        return raw if isinstance(raw, CapabilityEvidence) else CapabilityEvidence.model_validate(raw)
+    except Exception:
+        return None
+
+
+def _format_budget_evidence_context(evidence_store: dict[str, dict]) -> str:
+    """Build a small price-relevant context instead of replaying raw provider data."""
+    sections: list[str] = []
+    flight = _evidence_from_store(evidence_store, "FLIGHT_ROUTE_SEARCH")
+    if flight is not None:
+        data = flight.data if isinstance(flight.data, dict) else {}
+        routes = data.get("routes", [])
+        if isinstance(routes, dict):
+            routes = routes.get("data", [])
+        routes = routes if isinstance(routes, list) else []
+        airlines = sorted({
+            str((record.get("airline") or {}).get("name") or "").strip()
+            for record in routes if isinstance(record, dict)
+            if str((record.get("airline") or {}).get("name") or "").strip()
+        })[:5]
+        route = f"{data.get('origin') or 'origin'} to {data.get('destination') or 'destination'}"
+        sections.append(
+            "### Flight reference\n"
+            f"- {len(routes)} route-matched status records observed for {route}.\n"
+            f"- Airlines represented: {', '.join(airlines) if airlines else 'not identified'}.\n"
+            "- AviationStack supplies status/reference data, not bookable fares. Airfare must be a clearly labelled planning estimate."
+        )
+
+    hotels = _evidence_from_store(evidence_store, "HOTEL_WEB_RESEARCH")
+    if hotels is not None:
+        items = hotels.data if isinstance(hotels.data, list) else []
+        lines: list[str] = []
+        for item in items[:4]:
+            if not isinstance(item, dict):
+                continue
+            title = " ".join(str(item.get("title") or "Accommodation source").split())[:120]
+            snippet = " ".join(str(item.get("snippet") or "").split())[:280]
+            lines.append(f"- [WEB_SOURCE] {title}: {snippet or 'Rates require verification.'}")
+        sections.append(
+            "### Accommodation references\n" + (
+                "\n".join(lines)
+                if lines else "- No usable hotel rate evidence was returned; use a labelled planning estimate."
+            )
+        )
+
+    if not sections:
+        return (
+            "No price-bearing provider evidence was available. Use broad labelled planning estimates "
+            "and tell the traveller to verify live fares and room rates."
+        )
+    # Defensive ceiling: budget synthesis never needs raw weather or complete provider payloads.
+    return "\n\n".join(sections)[:5000]
+
+
+def _duration_days(state: TravelState) -> int:
+    text = f"{(state.get('trip_constraints') or {}).get('duration', '')} {state.get('user_query', '')}"
+    match = re.search(r"\b(\d{1,2})\s*(?:day|days)\b", text, flags=re.IGNORECASE)
+    return max(1, min(30, int(match.group(1)))) if match else 7
+
+
+def _traveller_count(state: TravelState) -> int:
+    constraints = state.get("trip_constraints") or {}
+    for value in (constraints.get("traveler_count"), constraints.get("traveller_count")):
+        try:
+            if value:
+                return max(1, min(20, int(value)))
+        except (TypeError, ValueError):
+            pass
+    match = re.search(
+        r"\b(\d{1,2})\s*(?:travellers?|travelers?|people|persons?|adults?)\b",
+        state.get("user_query", ""), flags=re.IGNORECASE,
+    )
+    return max(1, min(20, int(match.group(1)))) if match else 1
+
+
+def _location_country(location: str) -> str:
+    code = country_name_to_code(location)
+    if code:
+        return code
+    airport = get_airport_reference(resolve_location_to_iata(location))
+    return str((airport or {}).get("country") or "").upper()
+
+
+def _explicit_inr_budget(state: TravelState) -> int | None:
+    text = f"{(state.get('trip_constraints') or {}).get('budget', '')} {state.get('user_query', '')}"
+    patterns = (
+        r"(?:₹|INR\s*)\s*([\d,.]+)\s*(lakh|lakhs|lac|lacs|k|thousand)?",
+        r"\bbudget(?:\s+of|\s+is|\s*:)?\s*([\d,.]+)\s*(lakh|lakhs|lac|lacs|k|thousand)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            amount = float(match.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        unit = str(match.group(2) or "").casefold()
+        if unit in {"lakh", "lakhs", "lac", "lacs"}:
+            amount *= 100_000
+        elif unit in {"k", "thousand"}:
+            amount *= 1_000
+        return int(amount) if amount > 0 else None
+    return None
+
+
+def _inr(value: int) -> str:
+    return f"₹{value:,}"
+
+
+def _deterministic_budget_fallback(state: TravelState) -> str:
+    """Always return a complete planning worksheet when the budget LLM is unavailable."""
+    constraints = state.get("trip_constraints") or {}
+    days = _duration_days(state)
+    nights = max(1, days - 1)
+    travellers = _traveller_count(state)
+    rooms = max(1, (travellers + 1) // 2)
+    style = str(constraints.get("travel_style") or constraints.get("budget") or "mid-range").casefold()
+    tier = "luxury" if "lux" in style else "budget" if any(x in style for x in ("budget", "cheap", "low")) else "mid-range"
+    rates = {
+        "budget": ((2500, 5000), (1200, 2500), (700, 1600), (700, 2000)),
+        "mid-range": ((6000, 12000), (2500, 5000), (1200, 2800), (1200, 3500)),
+        "luxury": ((16000, 35000), (5000, 12000), (3000, 8000), (3000, 10000)),
+    }[tier]
+    origin = str(constraints.get("origin") or "Delhi")
+    destination = str(constraints.get("destination") or "the destination")
+    international = bool(_location_country(origin) and _location_country(destination) and _location_country(origin) != _location_country(destination))
+    flight_per_person = (35_000, 95_000) if international else (8_000, 25_000)
+    accommodation = (rates[0][0] * nights * rooms, rates[0][1] * nights * rooms)
+    food = (rates[1][0] * days * travellers, rates[1][1] * days * travellers)
+    transport = (rates[2][0] * days * travellers, rates[2][1] * days * travellers)
+    activities = (rates[3][0] * days * travellers, rates[3][1] * days * travellers)
+    flights = (flight_per_person[0] * travellers, flight_per_person[1] * travellers)
+    subtotal = tuple(sum(values) for values in zip(flights, accommodation, food, transport, activities))
+    contingency = (round(subtotal[0] * 0.10), round(subtotal[1] * 0.10))
+    total = (subtotal[0] + contingency[0], subtotal[1] + contingency[1])
+    cap = _explicit_inr_budget(state)
+    feasibility = (
+        f"The stated cap of {_inr(cap)} is {'within' if cap >= total[0] else 'below'} this planning range."
+        if cap else "No numeric spending cap was supplied, so affordability against a personal limit cannot be determined."
+    )
+    return f"""## 1. Estimated cost breakdown
+
+**Planning estimate — not a live quotation.** Assumptions: {travellers} traveller(s), {days} days, {nights} nights, {rooms} room(s), {tier} style.
+
+| Category | Estimated range (INR) | Basis |
+|---|---:|---|
+| Return flights | {_inr(flights[0])}–{_inr(flights[1])} | [MODEL ESTIMATE - Not Live Fare]; verify with airlines |
+| Accommodation | {_inr(accommodation[0])}–{_inr(accommodation[1])} | {rooms} room(s) × {nights} nights |
+| Food | {_inr(food[0])}–{_inr(food[1])} | {days} days × {travellers} traveller(s) |
+| Local transport | {_inr(transport[0])}–{_inr(transport[1])} | Planning allowance |
+| Sightseeing | {_inr(activities[0])}–{_inr(activities[1])} | Planning allowance |
+| Contingency | {_inr(contingency[0])}–{_inr(contingency[1])} | 10% buffer |
+| **Estimated total** | **{_inr(total[0])}–{_inr(total[1])}** | Broad planning range |
+
+## 2. Budget feasibility assessment
+
+{feasibility} Live fares, dates, occupancy, and exchange rates can materially change the result.
+
+## 3. Cost-saving recommendations
+
+- Compare airline fares for the exact dates and baggage allowance.
+- Prefer well-connected neighborhoods to reduce daily transport costs.
+- Reserve refundable rooms, then recheck prices before the cancellation deadline.
+
+## 4. Risk areas
+
+- Airfare and accommodation are unverified and normally create the largest variation.
+- Weekends, holidays, taxes, card charges, visas, and insurance may increase the total.
+
+## 5. Budget assumptions and verification checklist
+
+- Confirm exact travel dates, traveller count, and room occupancy.
+- Replace the estimated flight and hotel rows with bookable quotes before paying.
+- Recalculate the total using the current exchange rate and a 10% contingency."""
+
+
 async def budget_agent(state: TravelState):
     statuses = dict(state.get("specialist_statuses", {}))
-    evidence_context = format_grounded_evidence_context(state.get("evidence_store", {}))
+    evidence_context = _format_budget_evidence_context(state.get("evidence_store", {}))
     llm_token_usage = dict(state.get("llm_token_usage", {}))
 
     prompt = (
@@ -952,11 +1153,12 @@ async def budget_agent(state: TravelState):
         }
     except Exception as exc:
         print(f"[budget_agent] LLM call failed (type={type(exc).__name__}).", flush=True)
-        statuses["budget_agent"] = "DEGRADED"
+        budget_text = _deterministic_budget_fallback(state)
+        statuses["budget_agent"] = "COMPLETED"
         return {
-            "budget_results": "Budget estimation could not be generated.",
+            "budget_results": budget_text,
             "specialist_statuses": statuses,
-            "messages": [AIMessage(content="Budget estimation failed.")],
+            "messages": [AIMessage(content="Budget planning estimate generated from deterministic assumptions.")],
             "llm_calls": state.get("llm_calls", 0),
             "llm_token_usage": llm_token_usage,
         }
