@@ -19,6 +19,7 @@ from backend import (
     DATABASE_URL,
 )
 from project_config import PROJECT_ROOT
+from database import create_database_pool, database_pool_ready
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from artifact_store import (
@@ -50,7 +51,8 @@ BASE_DIR = PROJECT_ROOT
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize the AsyncPostgresSaver and bind TravelAgentService to app.state."""
-    checkpointer_cm = None
+    checkpoint_pool = None
+    app.state.checkpoint_pool = None
     await start_provider_clients()
     artifact_store = ArtifactStore(
         database_url=DATABASE_URL,
@@ -63,13 +65,18 @@ async def lifespan(app: FastAPI):
     app.state.artifact_store = artifact_store
     app.state.trip_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TRIPS)
     try:
-        checkpointer_cm = AsyncPostgresSaver.from_conn_string(DATABASE_URL)
-        checkpointer = await checkpointer_cm.__aenter__()
+        checkpoint_pool = create_database_pool(DATABASE_URL, name="tripbandhu-checkpoints")
+        await checkpoint_pool.open()
+        checkpointer = AsyncPostgresSaver(checkpoint_pool)
         await checkpointer.setup()
+        app.state.checkpoint_pool = checkpoint_pool
         app.state.travel_service = create_travel_service(checkpointer)
         app.state.checkpointer_backend = "postgresql"
         print("[lifespan] TravelAgentService initialized with AsyncPostgresSaver", flush=True)
     except Exception as exc:
+        if checkpoint_pool is not None:
+            await checkpoint_pool.close()
+            checkpoint_pool = None
         print(
             f"[lifespan] AsyncPostgresSaver initialization failed ({type(exc).__name__}). "
             "Falling back to InMemorySaver for application lifecycle.",
@@ -81,9 +88,10 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        if checkpointer_cm is not None:
+        if checkpoint_pool is not None:
             try:
-                await checkpointer_cm.__aexit__(None, None, None)
+                await checkpoint_pool.close()
+                app.state.checkpoint_pool = None
                 print("[lifespan] AsyncPostgresSaver closed cleanly.", flush=True)
             except Exception as close_exc:
                 print(
@@ -477,16 +485,21 @@ async def readiness_check(request: Request):
     store = _artifact_store(request)
     artifact_status = await store.readiness() if store is not None else {"ready": False, "backend": "unavailable", "persistent": False}
     checkpointer_backend = getattr(request.app.state, "checkpointer_backend", "memory")
-    persistence_ready = artifact_status["persistent"] and checkpointer_backend == "postgresql"
+    checkpoint_ready = (
+        await database_pool_ready(getattr(request.app.state, "checkpoint_pool", None))
+        if checkpointer_backend == "postgresql" else True
+    )
+    persistence_ready = artifact_status["persistent"] and artifact_status["ready"] and checkpointer_backend == "postgresql" and checkpoint_ready
     session_status = session_security_status()
     secure_session_ready = session_status["configured"] or not _is_render_environment()
-    ready = artifact_status["ready"] and secure_session_ready and (persistence_ready or not REQUIRE_PERSISTENT_STORAGE)
+    ready = artifact_status["ready"] and checkpoint_ready and secure_session_ready and (persistence_ready or not REQUIRE_PERSISTENT_STORAGE)
     if _is_render_environment() and not session_status["configured"]:
         print("[readiness] SESSION_SIGNING_SECRET is missing or shorter than 32 characters.", flush=True)
     content = {
         "status": "ready" if ready else "degraded",
         "ready": ready,
         "checkpointer_backend": checkpointer_backend,
+        "checkpointer_ready": checkpoint_ready,
         "artifact_store": artifact_status,
         "persistent_storage": persistence_ready,
         "session_security": session_status,

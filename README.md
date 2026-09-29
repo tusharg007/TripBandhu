@@ -45,7 +45,9 @@ Approved plans are session-bound. With a reachable `DATABASE_URL`, documents and
 
 ### Render + Neon deployment
 
-Create a Neon PostgreSQL project, copy its direct connection string with TLS enabled (`sslmode=require`), and add it to the Render service as `DATABASE_URL`. Use Neon’s direct endpoint for this long-running FastAPI service; LangGraph already manages its application-scoped PostgreSQL pool, so adding Neon’s external pooler would create unnecessary double pooling. Keep `REQUIRE_PERSISTENT_STORAGE=false` for the first deployment.
+Create a Neon PostgreSQL project, copy its direct connection string with TLS enabled (`sslmode=require`), and add it to the Render service as `DATABASE_URL`. The direct endpoint also supports the schema initialization performed on startup. Keep `REQUIRE_PERSISTENT_STORAGE=false` for the first deployment.
+
+TripBandhu creates separate psycopg connection pools for LangGraph checkpoints and approved-plan/PDF storage. Each pool checks connections before handing them to a request, replaces disconnected idle connections, and releases connections between database operations. It keeps no minimum idle connections, closes excess idle connections after 60 seconds, and allows up to four connections per pool per worker. No database connection is held during LLM calls or human review. The app does not replay an entire agent run to recover an idle connection.
 
 Set `SESSION_SIGNING_SECRET` to a strong external value. Generate one locally with:
 
@@ -53,7 +55,7 @@ Set `SESSION_SIGNING_SECRET` to a strong external value. Generate one locally wi
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-After deploying, confirm `/health/live` returns HTTP 200 and `/health/ready` reports `checkpointer_backend: postgresql`, `artifact_store.backend: postgresql`, `persistent_storage: true`, and session security sourced from `external`. Create, approve, and download a plan; redeploy once and verify the same approved plan remains available. Only then set `REQUIRE_PERSISTENT_STORAGE=true` in Render and redeploy. If Neon is unavailable afterward, `/health/live` remains healthy but `/health/ready` returns HTTP 503.
+After deploying, confirm `/health/live` returns HTTP 200 and `/health/ready` reports `checkpointer_backend: postgresql`, `checkpointer_ready: true`, `artifact_store.backend: postgresql`, `artifact_store.ready: true`, `persistent_storage: true`, and session security sourced from `external`. Readiness queries both pools; a database configured at startup but no longer reachable returns HTTP 503 even when persistence is optional. Create, approve, and download a plan; redeploy once and verify the same approved plan remains available. Also leave a draft idle for at least 10 minutes, then approve and download it. Only after these checks pass should you set `REQUIRE_PERSISTENT_STORAGE=true` in Render and redeploy. `/health/live` remains independent of database availability.
 
 ---
 
@@ -406,6 +408,7 @@ User Query
 | `413 Request too large` | Groq TPM limit exceeded | Fixed in v1.0.2 — final synthesis uses `gpt-oss-20b` |
 | `No module named 'reportlab'` when downloading a PDF | Dependencies were installed from an older or malformed requirements file | Pull the latest code and run `pip install -r requirements.txt` in the active environment |
 | PDF says the approved plan is unavailable after an app restart | The service is running in intentional memory fallback because PostgreSQL is not reachable | Fix Render’s Neon `DATABASE_URL` and verify `/health/ready` reports `persistent_storage: true` |
+| `OperationalError: the connection is closed` before any agent runs | An older build retained one database connection after it disconnected | Deploy the connection-pool recovery fix; verify `checkpointer_ready` and `artifact_store.ready`, then test approval after an idle period |
 | Flights always "unavailable" | Missing key, endpoint access denial, timeout, or no route-matching records | Run the sanitized provider diagnostic and inspect its typed `error_code` and stage timing |
 | Hotels/weather show raw provider text | Provider evidence reached the UI without relevance and presentation layers | Hotel relevance filtering, safe weather normalization, and dedicated presentation passes now produce end-user Markdown |
 | Hotels show `DEGRADED` and Tavily reports HTTP `429` | Tavily rejected the live search because the API key exceeded its request-rate allowance | Wait briefly and start a new trip. If it happens frequently, check Tavily usage and use a production/PAYGO key; TripBandhu retries only a short provider-supplied `Retry-After` interval |

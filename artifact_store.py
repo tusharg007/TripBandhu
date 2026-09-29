@@ -15,13 +15,14 @@ import os
 import secrets
 import time
 from collections import deque
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from psycopg import AsyncConnection
-from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
+from database import create_database_pool, database_pool_ready
 
 from itinerary_document import ItineraryDocument, ItineraryValidationError, require_exportable
 
@@ -100,7 +101,7 @@ class ArtifactStore:
         self._thread_owners: dict[str, str] = {}
         self._request_windows: dict[str, deque[float]] = {}
         self._lock = asyncio.Lock()
-        self._connection: AsyncConnection | None = None
+        self._pool: AsyncConnectionPool | None = None
         self._database_url = str(database_url or "").strip()
         self._request_limit = max(1, int(request_limit))
         self._request_window_seconds = max(1, int(request_window_seconds))
@@ -112,11 +113,9 @@ class ArtifactStore:
         if not self._database_url:
             return
         try:
-            self._connection = await asyncio.wait_for(
-                AsyncConnection.connect(self._database_url, autocommit=True, row_factory=dict_row),
-                timeout=5,
-            )
-            await self._connection.execute(
+            self._pool = create_database_pool(self._database_url, name="tripbandhu-artifacts")
+            await self._pool.open()
+            await self._execute(
                 """
                 CREATE TABLE IF NOT EXISTS tripbandhu_artifact_threads (
                     thread_id TEXT PRIMARY KEY,
@@ -125,7 +124,7 @@ class ArtifactStore:
                 );
                 """
             )
-            await self._connection.execute(
+            await self._execute(
                 """
                 CREATE TABLE IF NOT EXISTS tripbandhu_itinerary_artifacts (
                     plan_id TEXT PRIMARY KEY,
@@ -142,22 +141,35 @@ class ArtifactStore:
                 );
                 """
             )
-            await self._connection.execute(
+            await self._execute(
                 "CREATE INDEX IF NOT EXISTS tripbandhu_artifact_owner_idx "
                 "ON tripbandhu_itinerary_artifacts (owner_hash, plan_id, version);"
             )
             self.backend = "postgresql"
             self.persistent = True
         except Exception as exc:
-            self._connection = None
+            if self._pool is not None:
+                await self._pool.close()
+            self._pool = None
             self.backend = "memory"
             self.persistent = False
             print(f"[artifact_store] PostgreSQL artifacts unavailable ({type(exc).__name__}); using memory.", flush=True)
 
     async def close(self) -> None:
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
+        if self._pool is not None:
+            await self._pool.close()
+
+    @asynccontextmanager
+    async def _cursor(self):
+        if self._pool is None:
+            raise RuntimeError("Artifact database is not initialized")
+        async with self._pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                yield cursor
+
+    async def _execute(self, query, params=None) -> None:
+        async with self._cursor() as cursor:
+            await cursor.execute(query, params)
 
     @staticmethod
     def _document_from_row(row: dict[str, Any]) -> StoredPlan:
@@ -178,8 +190,8 @@ class ArtifactStore:
         )
 
     async def bind_thread(self, session_id: str, thread_id: str) -> None:
-        if self._connection is not None:
-            await self._connection.execute(
+        if self._pool is not None:
+            await self._execute(
                 """
                 INSERT INTO tripbandhu_artifact_threads (thread_id, owner_hash)
                 VALUES (%s, %s)
@@ -193,8 +205,8 @@ class ArtifactStore:
             self._thread_owners[thread_id] = owner_hash(session_id)
 
     async def owns_thread(self, session_id: str, thread_id: str) -> bool:
-        if self._connection is not None:
-            async with self._connection.cursor() as cursor:
+        if self._pool is not None:
+            async with self._cursor() as cursor:
                 await cursor.execute(
                     "SELECT owner_hash FROM tripbandhu_artifact_threads WHERE thread_id = %s",
                     (thread_id,),
@@ -230,14 +242,14 @@ class ArtifactStore:
             document=document,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
-        if self._connection is not None:
+        if self._pool is not None:
             existing = await self._get_owned_thread_version(session_id, document.thread_id, document.version)
             if existing is not None:
                 if not hmac.compare_digest(existing.content_hash, document.content_hash):
                     raise ItineraryValidationError("An immutable approved itinerary already exists for this review version.")
                 return existing
             payload = Jsonb(document.model_dump(mode="json"))
-            await self._connection.execute(
+            await self._execute(
                 """
                 INSERT INTO tripbandhu_itinerary_artifacts
                     (plan_id, owner_hash, thread_id, version, content_hash, document_json)
@@ -265,9 +277,9 @@ class ArtifactStore:
         return record
 
     async def _get_owned_thread_version(self, session_id: str, thread_id: str, version: int) -> StoredPlan | None:
-        if self._connection is None:
+        if self._pool is None:
             return None
-        async with self._connection.cursor() as cursor:
+        async with self._cursor() as cursor:
             await cursor.execute(
                 """
                 SELECT plan_id, owner_hash, thread_id, version, content_hash, document_json,
@@ -281,8 +293,8 @@ class ArtifactStore:
         return self._document_from_row(row) if row else None
 
     async def get_owned_plan(self, session_id: str, plan_id: str, version: int) -> StoredPlan | None:
-        if self._connection is not None:
-            async with self._connection.cursor() as cursor:
+        if self._pool is not None:
+            async with self._cursor() as cursor:
                 await cursor.execute(
                     """
                     SELECT plan_id, owner_hash, thread_id, version, content_hash, document_json,
@@ -320,7 +332,7 @@ class ArtifactStore:
         # Rendering does not call an LLM or provider. Use a per-store lock so
         # duplicate clicks cannot generate a second artifact simultaneously.
         async with self._lock:
-            if self._connection is not None:
+            if self._pool is not None:
                 record = await self.get_owned_plan(session_id, plan_id, version)
             else:
                 record = self._plans.get(plan_id)
@@ -332,8 +344,8 @@ class ArtifactStore:
             record.pdf_bytes = pdf_bytes
             record.pdf_renderer_version = renderer_version
             record.asset_version = asset_version
-            if self._connection is not None:
-                await self._connection.execute(
+            if self._pool is not None:
+                await self._execute(
                     """
                     UPDATE tripbandhu_itinerary_artifacts
                     SET pdf_bytes = %s, pdf_renderer_version = %s, asset_version = %s
@@ -349,6 +361,6 @@ class ArtifactStore:
         return {
             "backend": self.backend,
             "persistent": self.persistent,
-            "ready": True,
+            "ready": await database_pool_ready(self._pool) if self.persistent else True,
             "request_limit": self._request_limit,
         }

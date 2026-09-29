@@ -84,6 +84,7 @@ jobs:
 
       - name: Run PostgreSQL Checkpoint Integration Test
         env:
+          TEST_DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5432/tripbandhu_test?sslmode=disable
           DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5432/tripbandhu_test?sslmode=disable
         run: |
           python -m pytest -m "integration" -v --tb=short

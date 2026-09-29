@@ -1,6 +1,6 @@
 import asyncio
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -49,6 +49,8 @@ def test_persistent_backends_report_ready_when_external_session_secret_is_config
     app.app.state.checkpointer_backend = "postgresql"
     try:
         with patch.object(app, "REQUIRE_PERSISTENT_STORAGE", True), \
+             patch.object(app, "database_pool_ready", AsyncMock(return_value=True)), \
+             patch("artifact_store.database_pool_ready", AsyncMock(return_value=True)), \
              patch.object(app, "session_security_status", return_value={"configured": True, "source": "external"}), \
              patch.dict(os.environ, {"RENDER": "true"}):
             response = TestClient(app.app).get("/health/ready")
@@ -66,3 +68,22 @@ def test_persistent_backends_report_ready_when_external_session_secret_is_config
                 pass
         else:
             app.app.state.checkpointer_backend = old_backend
+
+
+def test_dead_checkpoint_database_is_not_ready_even_with_optional_persistence():
+    with patch.object(app.app.state, "checkpointer_backend", "postgresql", create=True), \
+         patch.object(app, "database_pool_ready", AsyncMock(return_value=False)), \
+         patch.object(app, "REQUIRE_PERSISTENT_STORAGE", False), \
+         patch.object(app, "session_security_status", return_value={"configured": True, "source": "external"}):
+        response = TestClient(app.app).get("/health/ready")
+        assert response.status_code == 503
+        assert response.json()["checkpointer_ready"] is False
+        assert TestClient(app.app).get("/health/live").status_code == 200
+
+
+def test_dead_artifact_database_is_not_ready():
+    store = ArtifactStore()
+    store.backend = "postgresql"
+    store.persistent = True
+    with patch("artifact_store.database_pool_ready", AsyncMock(return_value=False)):
+        assert asyncio.run(store.readiness())["ready"] is False
