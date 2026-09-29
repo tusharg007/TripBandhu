@@ -4,7 +4,7 @@ test_model_migration.py — Phase 1+3+7+8 regression tests for the LLM migration
 Covers:
 - Deprecated model ID absence from runtime module strings
 - Centralized factory configuration (max_retries=0)
-- Weather agent destination priority (no LLM when supervisor provided destination)
+- Weather agent destination priority (no extraction LLM when supervisor provided destination)
 - Structured output schema compatibility
 - Degraded itinerary routing (Phase 6)
 - LLM rate-limit classification (Phase 7)
@@ -92,7 +92,7 @@ class LLMFactoryConfigTest(unittest.TestCase):
 
 
 class WeatherDestinationPriorityTest(unittest.TestCase):
-    """Phase 3: Weather agent must use supervisor destination without LLM call."""
+    """Weather agent uses the supervisor destination without another extraction call."""
 
     def test_no_llm_called_when_supervisor_destination_present(self):
         """weather_agent must skip extract_destination_async when trip_constraints.destination is set."""
@@ -111,13 +111,17 @@ class WeatherDestinationPriorityTest(unittest.TestCase):
         async def _forecast_ok(city):
             return f"Clear for a week in {city}"
 
+        weather_llm = MagicMock()
+        weather_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Sunny in Kyoto. Pack light layers."))
+
         with patch.object(backend, "extract_destination_async",
                           side_effect=AssertionError("LLM extraction called unexpectedly")), \
              patch.object(backend, "weather_mcp_search", side_effect=_weather_ok), \
-             patch.object(backend, "forecast_mcp_search", side_effect=_forecast_ok):
+             patch.object(backend, "forecast_mcp_search", side_effect=_forecast_ok), \
+             patch.object(backend, "_llm_weather", weather_llm):
             result = asyncio.run(backend.weather_agent(state))
 
-        self.assertEqual(result["llm_calls"], 0, "No LLM call when destination is in constraints")
+        self.assertEqual(result["llm_calls"], 1, "Only the weather presentation call is needed")
         self.assertTrue(result.get("weather_data_available", False))
 
     def test_llm_called_when_destination_absent(self):

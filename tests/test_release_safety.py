@@ -51,6 +51,13 @@ class ReleaseSafetyTest(unittest.TestCase):
         self.assertIn("DOMPurify.sanitize", script)
         self.assertNotIn("html2pdf.bundle.min.js", template)
 
+    def test_new_generation_does_not_reuse_previous_review_thread(self):
+        script = (ROOT / "static" / "script.js").read_text(encoding="utf-8")
+        generation = script.split("async function sendMessage()", 1)[1].split("async function resumeTrip", 1)[0]
+        resume = script.split("async function resumeTrip", 1)[1]
+        self.assertNotIn("thread_id: currentThreadId", generation)
+        self.assertIn("thread_id: currentThreadId", resume)
+
     def test_quick_load_presets_contract(self):
         template = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "static" / "script.js").read_text(encoding="utf-8")

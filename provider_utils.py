@@ -194,6 +194,7 @@ async def async_call_provider(
     timeout_override: float | None = None,
     max_attempts: int = RETRY_MAX_ATTEMPTS,
     source_count_fn: Callable[[Any], int] | None = None,
+    allow_empty: bool = False,
 ) -> CapabilityResult:
     """Call an async provider coroutine with bounded timeout, bounded retry, and trace capture.
 
@@ -219,7 +220,7 @@ async def async_call_provider(
                 raise embedded_error
 
             source_count = (source_count_fn or _default_source_count)(data)
-            if source_count <= 0:
+            if source_count <= 0 and not allow_empty:
                 raise ProviderPayloadError(
                     "Provider returned no usable evidence.",
                     error_code=ErrorCode.INVALID_RESPONSE,

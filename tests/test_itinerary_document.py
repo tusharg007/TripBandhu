@@ -84,3 +84,31 @@ class ItineraryDocumentTests(unittest.TestCase):
         self.assertEqual(budget.line_items[0].amount_low, Decimal("45000"))
         self.assertEqual(budget.line_items[0].amount_high, Decimal("60000"))
         self.assertEqual(budget.totals(), (Decimal("63500.00"), Decimal("78500.00")))
+
+    def test_reversed_budget_range_is_ignored_during_approval(self):
+        document = build_itinerary_document(
+            thread_id="thread-1",
+            markdown=COMPLETE_PLAN,
+            constraints={"duration": "3 days"},
+            budget_markdown="| Flights | ₹80,000 – ₹40,000 |",
+            approved=True,
+        )
+        self.assertEqual(document.budget.line_items, [])
+        self.assertTrue(document.approved)
+
+    def test_day_by_day_table_can_be_approved_and_exported(self):
+        table_plan = """# Jaipur weekend
+| Day | Highlights | Hotel |
+| --- | --- | --- |
+| Day 1 - Arrival | Train from Delhi; Hawa Mahal | Stay near Bani Park |
+| Day 2 - Heritage | Amber Fort; City Palace | Same hotel |
+| Day 3 - Return | Jantar Mantar; return to Delhi | Check out |
+"""
+        document = build_itinerary_document(
+            thread_id="table-plan", markdown=table_plan,
+            constraints={"duration": "3 days", "destination": "Jaipur"}, approved=True,
+        )
+        self.assertTrue(document.is_complete)
+        self.assertEqual([day.day for day in document.days], [1, 2, 3])
+        self.assertIn("Amber Fort", document.days[1].highlights[0])
+        require_exportable(document)

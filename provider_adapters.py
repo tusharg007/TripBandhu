@@ -432,8 +432,6 @@ def _validate_aviation(
         if expected_arrival and str(arrival.get("iata")).upper() != expected_arrival:
             continue
         records.append(item)
-    if not records:
-        raise ProviderRequestError("aviation", ErrorCode.INVALID_RESPONSE)
     return {"data": records[:10], "pagination": payload.get("pagination") or {}}
 
 

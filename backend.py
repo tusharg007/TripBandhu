@@ -119,6 +119,7 @@ _llm_flight   = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["flight_summa
 _llm_hotel    = _llm_control.bind(max_tokens=MAX_TOKENS_BY_TASK["hotel_summary"])
 _llm_weather  = _llm_control.bind(max_tokens=MAX_TOKENS_BY_TASK["weather_summary"])
 _llm_itinerary = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["itinerary"])
+_llm_itinerary_fallback = _llm_control.bind(max_tokens=MAX_TOKENS_BY_TASK["itinerary"])
 _llm_revision  = _llm_generation.bind(max_tokens=MAX_TOKENS_BY_TASK["revision"])
 # final_synthesis uses control model (gpt-oss-20b, 12k TPM) because the full
 # prompt (all specialist summaries) exceeds gpt-oss-120b's 8k TPM hard limit.
@@ -469,6 +470,7 @@ async def flight_agent(state: TravelState):
         server="aviationstack",
         tool_name="list_routes",
         source_count_fn=_count_provider_records,
+        allow_empty=True,
     )
     if getattr(routes_result, "trace_entry", None):
         routes_result.trace_entry.sequence = len(trace) + 1
@@ -494,6 +496,42 @@ async def flight_agent(state: TravelState):
             "capability_trace": trace,
             "evidence_store": evidence_store,
             "messages": [AIMessage(content="Flight data unavailable.")],
+            "llm_calls": llm_calls,
+            "llm_token_usage": llm_token_usage,
+        }
+
+    if _count_provider_records(routes_result.data) == 0:
+        origin_airport = get_airport_reference(origin_iata)
+        destination_airport = get_airport_reference(destination_iata)
+        airport_lines = [
+            f"- {airport['name']} ({airport['iata']}), {airport['city']}"
+            for airport in (origin_airport, destination_airport)
+            if airport
+        ]
+        airport_context = "\n".join(airport_lines) if airport_lines else "Airport details require confirmation."
+        no_observations = (
+            f"No matching real-time flight observations were returned for {orig or 'the origin'} "
+            f"to {dest}. This does not establish that the route has no flights. "
+            "AviationStack's real-time status feed cannot confirm future availability or fares. "
+            "Check your travel dates with an airline or booking provider before booking.\n\n"
+            f"Airport references:\n{airport_context}"
+        )
+        statuses["flight_agent"] = "COMPLETED"
+        evidence_store["FLIGHT_ROUTE_SEARCH"] = CapabilityEvidence(
+            capability="FLIGHT_ROUTE_SEARCH",
+            provider="aviationstack",
+            tool_name="list_routes",
+            evidence_kind=EvidenceKind.UNAVAILABLE,
+            status=CapabilityHealth.DEGRADED,
+            summary=no_observations,
+        ).model_dump()
+        return {
+            "flight_results": no_observations,
+            "flight_data_available": False,
+            "specialist_statuses": statuses,
+            "capability_trace": trace,
+            "evidence_store": evidence_store,
+            "messages": [AIMessage(content="No matching live flight observations were returned.")],
             "llm_calls": llm_calls,
             "llm_token_usage": llm_token_usage,
         }
@@ -940,7 +978,21 @@ _ITINERARY_SYSTEM = (
     "- Complete every day requested by the user. Never end mid-day or mid-sentence. If space is "
     "tight, make each day more concise instead of omitting later days.\n"
     "- End with a short 'Before you book' checklist so completion is unambiguous."
+    "\n- Use a separate Markdown heading '### Day 1', '### Day 2', and so on for every requested day. "
+    "Do not put the day-by-day itinerary inside a table; the reviewed plan must be exportable."
 )
+
+
+def _retry_with_control_model(exc: Exception) -> bool:
+    """Use the separate control model for transient generation-model failures."""
+    status = getattr(exc, "status_code", None)
+    return (
+        isinstance(exc, (TimeoutError, asyncio.TimeoutError))
+        or status == 429
+        or isinstance(status, int) and status >= 500
+        or "ratelimit" in type(exc).__name__.casefold()
+        or "429" in str(exc)
+    )
 
 
 async def itinerary_agent(state: TravelState):
@@ -959,14 +1011,20 @@ async def itinerary_agent(state: TravelState):
     )
 
     try:
-        itinerary_content, tokens, generation_calls = await invoke_llm_complete_text(
-            _llm_itinerary,
-            [
-                SystemMessage(content=_ITINERARY_SYSTEM),
-                HumanMessage(content=prompt),
-            ],
-            task_name="itinerary",
-        )
+        messages = [SystemMessage(content=_ITINERARY_SYSTEM), HumanMessage(content=prompt)]
+        try:
+            itinerary_content, tokens, generation_calls = await invoke_llm_complete_text(
+                _llm_itinerary, messages, task_name="itinerary",
+            )
+        except Exception as exc:
+            if not _retry_with_control_model(exc):
+                raise
+            print(f"[itinerary_agent] generation model unavailable (type={type(exc).__name__}); trying control model.", flush=True)
+            itinerary_content, tokens, generation_calls = await invoke_llm_complete_text(
+                _llm_itinerary_fallback, messages, task_name="itinerary_fallback",
+            )
+        if not itinerary_content.strip():
+            raise ValueError("Itinerary model returned no text.")
         llm_token_usage = merge_token_usage(llm_token_usage, tokens)
         statuses["itinerary_agent"] = "COMPLETED"
         llm_calls = state.get("llm_calls", 0) + generation_calls
@@ -1235,6 +1293,15 @@ async def final_agent(state: TravelState):
         }
     except Exception as exc:
         print(f"[final_agent] LLM call failed (type={type(exc).__name__}).", flush=True)
+        fallback_plan = (state.get("itinerary") or "").strip() if state.get("approved") else ""
+        if fallback_plan:
+            return {
+                "final_response": fallback_plan,
+                "messages": [AIMessage(content="Approved draft preserved after final presentation failed.")],
+                "llm_calls": state.get("llm_calls", 0),
+                "llm_token_usage": llm_token_usage,
+                "run_status": RunStatus.DEGRADED.value,
+            }
         return {
             "final_response": "The final travel plan could not be generated. Please try again.",
             "messages": [AIMessage(content="Final plan generation failed.")],
@@ -1395,6 +1462,10 @@ def build_travel_graph(checkpointer=None):
     return g.compile(checkpointer=checkpointer)
 
 
+class ReviewNotPendingError(ValueError):
+    """The requested thread has no draft currently awaiting review."""
+
+
 class TravelAgentService:
     def __init__(self, compiled_graph):
         self.graph = compiled_graph
@@ -1458,6 +1529,13 @@ class TravelAgentService:
                 "provider_timeouts_seconds": dict(PROVIDER_TIMEOUT_SECONDS),
             },
         }
+        snapshot = await self.graph.aget_state(config)
+        if snapshot is None or not snapshot.values:
+            raise ReviewNotPendingError("No travel plan exists for this thread.")
+        if not snapshot.next:
+            return _serialize_result(snapshot.values, thread_id)
+        if "human_review" not in snapshot.next:
+            raise ReviewNotPendingError("This travel plan is not awaiting approval.")
         result = await self.graph.ainvoke(
             Command(
                 resume={

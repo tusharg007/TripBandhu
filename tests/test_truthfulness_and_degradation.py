@@ -60,6 +60,28 @@ class TruthfulnessAndDegradationTest(unittest.TestCase):
         self.assertTrue(result["flight_data_available"])
         self.assertIn("ANA and JAL", result["flight_results"])
 
+    def test_empty_live_flight_result_gives_truthful_airport_reference(self):
+        state = {
+            "user_query": "Plan a 5-day trip from Delhi to Dubai",
+            "selected_agents": ["flight_agent", "itinerary_agent"],
+            "specialist_statuses": {"flight_agent": "SELECTED"},
+            "trip_constraints": {"origin": "Delhi", "destination": "Dubai"},
+            "llm_calls": 0,
+        }
+
+        async def no_observations(tool_name, tool_args=None):
+            return {"data": []}
+
+        with patch("backend.aviation_mcp_call", side_effect=no_observations):
+            result = asyncio.run(backend.flight_agent(state))
+
+        self.assertEqual(result["specialist_statuses"]["flight_agent"], "COMPLETED")
+        self.assertFalse(result["flight_data_available"])
+        self.assertIn("No matching real-time flight observations", result["flight_results"])
+        self.assertIn("(DEL)", result["flight_results"])
+        self.assertIn("(DXB)", result["flight_results"])
+        self.assertEqual(result["llm_calls"], 0)
+
 
     def test_supervisor_marks_unselected_agents_as_not_selected(self):
         state = {"user_query": "What is the weather in Paris?", "llm_calls": 0}

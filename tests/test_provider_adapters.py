@@ -71,7 +71,7 @@ def test_hotel_normalizer_requires_destination_match_for_structured_api_results(
     assert evidence.status.value == "DEGRADED"
 
 
-def test_aviation_validator_rejects_wrong_route():
+def test_aviation_validator_returns_no_observations_for_wrong_route():
     payload = {
         "data": [
             {
@@ -81,8 +81,8 @@ def test_aviation_validator_rejects_wrong_route():
             }
         ]
     }
-    with pytest.raises(ProviderRequestError):
-        _validate_aviation(payload, expected_departure="DEL", expected_arrival="LHR")
+    result = _validate_aviation(payload, expected_departure="DEL", expected_arrival="LHR")
+    assert result["data"] == []
 
 
 @pytest.mark.asyncio
@@ -223,6 +223,22 @@ async def test_provider_wrapper_rejects_empty_success_payload():
     )
     assert result.success is False
     assert result.error_code == ErrorCode.INVALID_RESPONSE
+    assert result.trace_entry.source_count == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_wrapper_can_accept_valid_empty_flight_result():
+    async def empty_response():
+        return {"data": []}
+
+    result = await async_call_provider(
+        empty_response,
+        provider_name="aviation",
+        safe_failure_message="Flight provider unavailable.",
+        source_count_fn=lambda payload: len(payload["data"]),
+        allow_empty=True,
+    )
+    assert result.success is True
     assert result.trace_entry.source_count == 0
 
 

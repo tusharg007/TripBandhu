@@ -130,6 +130,31 @@ class ApiContractTest(unittest.TestCase):
             self.assertEqual(payload["answer"], "Final plan")
             self.assertIn("specialist_statuses", payload)
 
+    def test_resume_value_error_is_not_reported_as_bad_user_input(self):
+        with patch("app.resume_travel_agent", new=AsyncMock(side_effect=ValueError("internal checkpoint failure"))):
+            response = asyncio.run(app.resume_travel_planner(
+                _make_mock_request(), app.TravelResumeRequest(thread_id="user_test", approved=True)
+            ))
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response_json(response)["error_code"], "RESUME_FAILED")
+
+    def test_approval_survives_export_validation_failure(self):
+        approved_result = {**SAMPLE_RESUME_RESPONSE, "approved": True}
+        store = MagicMock()
+        store.owns_thread = AsyncMock(return_value=True)
+        with patch("app._artifact_store", return_value=store), \
+             patch("app._request_session", return_value=("session-test", False)), \
+             patch("app.resume_travel_agent", new=AsyncMock(return_value=approved_result)), \
+             patch("app.build_itinerary_document", side_effect=ValueError("invalid model output")):
+            response = asyncio.run(app.resume_travel_planner(
+                _make_mock_request(), app.TravelResumeRequest(thread_id="user_test", approved=True)
+            ))
+        payload = response_json(response)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["approved"])
+        self.assertEqual(payload["export_status"], "UNAVAILABLE")
+        self.assertNotIn("invalid model output", payload["export_error"])
+
     def test_unexpected_errors_return_safe_public_message(self):
         async def failing_run(user_input, thread_id=None, service=None):
             raise RuntimeError("DATABASE_URL leaked from F:\\TripBandhu\\.env")

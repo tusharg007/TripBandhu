@@ -346,9 +346,10 @@ async function sendMessage() {
     try {
         const data = await postJson("/api/travel", {
             message,
-            thread_id: currentThreadId,
         });
 
+        latestPlanReference = null;
+        localStorage.removeItem(PLAN_STORAGE_KEY);
         renderResponse(data);
     } catch (error) {
         showError(error.message);

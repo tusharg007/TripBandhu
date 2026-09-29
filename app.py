@@ -423,16 +423,29 @@ async def resume_travel_planner(request: Request, request_data: TravelResumeRequ
                     "export_status": "UNAVAILABLE",
                     "export_error": str(exc),
                 })
+            except Exception as exc:
+                print(f"APPROVED_EXPORT_FAILED type={type(exc).__name__}", flush=True)
+                result.update({
+                    "export_status": "UNAVAILABLE",
+                    "export_error": "The plan was approved, but its PDF could not be saved. Please try again later.",
+                })
 
         response = JSONResponse(content=normalize_travel_response(result))
         _set_session_cookie(response, session_id, set_session)
         return response
 
-    except ValueError:
+    except backend.ReviewNotPendingError:
         return public_error(
-            "INVALID_REQUEST",
-            "The resume request is invalid.",
-            status_code=400,
+            "REVIEW_NOT_PENDING",
+            "This trip is not awaiting review. Generate a new draft before approving it.",
+            status_code=409,
+        )
+
+    except ValueError as exc:
+        print(f"RESUME_FAILED type={type(exc).__name__}", flush=True)
+        return public_error(
+            "RESUME_FAILED",
+            "Travel plan resume failed. Please try again in a moment.",
         )
 
     except Exception as exc:

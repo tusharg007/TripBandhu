@@ -115,6 +115,32 @@ class LLMAccountingTest(unittest.TestCase):
 
         self.assertEqual(result["llm_calls"], 5)
 
+    def test_itinerary_uses_control_model_after_generation_rate_limit(self):
+        import backend
+        state = {
+            "user_query": "5-day Dubai itinerary",
+            "specialist_statuses": {},
+            "trip_constraints": {"duration": "5 days", "destination": "Dubai"},
+            "llm_calls": 2,
+            "llm_token_usage": {},
+        }
+
+        class ModelRateLimit(Exception):
+            status_code = 429
+
+        async def generate(runnable, messages, *, task_name):
+            if task_name == "itinerary":
+                raise ModelRateLimit()
+            self.assertEqual(task_name, "itinerary_fallback")
+            self.assertIs(runnable, backend._llm_itinerary_fallback)
+            return "### Day 1 - Arrival\n- Explore Dubai.", {"total_tokens": 12}, 1
+
+        with patch.object(backend, "invoke_llm_complete_text", side_effect=generate):
+            result = asyncio.run(backend.itinerary_agent(state))
+        self.assertEqual(result["specialist_statuses"]["itinerary_agent"], "COMPLETED")
+        self.assertEqual(result["llm_calls"], 3)
+        self.assertIn("Day 1", result["itinerary"])
+
     def test_itinerary_revision_agent_counts_llm(self):
         """itinerary_revision_agent calls LLM — must increment llm_calls by 1."""
         import backend

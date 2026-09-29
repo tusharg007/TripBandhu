@@ -15,7 +15,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 
 DOCUMENT_SCHEMA_VERSION = "1.0"
@@ -200,6 +200,31 @@ def extract_daily_plans(markdown: str) -> list[DailyPlan]:
                 source_markdown="\n".join(section_lines).strip(),
             )
         )
+    if days:
+        return days
+
+    # Some otherwise complete model drafts present each day as a Markdown table
+    # row. Preserve the visible row content rather than rejecting its PDF export.
+    for line in lines:
+        stripped = line.strip()
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        day_match = _DAY_HEADING.match(cells[0])
+        if not day_match:
+            continue
+        details = [_clean_markdown_line(cell) for cell in cells[1:] if _clean_markdown_line(cell)]
+        if not details:
+            continue
+        number = int(day_match.group(1))
+        days.append(DailyPlan(
+            day=number,
+            title=_clean_markdown_line(day_match.group(2)) or f"Day {number}",
+            highlights=details,
+            source_markdown=stripped,
+        ))
     return days
 
 
@@ -252,6 +277,9 @@ def extract_budget_summary(markdown: str | None) -> BudgetSummary:
         values = [amount for amount in amounts if amount is not None]
         if not values or any(amount < 0 or amount > Decimal("100000000") for amount in values):
             continue
+        if len(values) > 1 and values[0] > values[1]:
+            # Ambiguous or reversed model output is not a usable budget range.
+            continue
         if normalized_category in seen_categories:
             continue
         seen_categories.add(normalized_category)
@@ -295,7 +323,10 @@ def build_itinerary_document(
     if not clean_markdown:
         raise ItineraryValidationError("A reviewed itinerary is required.")
 
-    days = extract_daily_plans(clean_markdown)
+    try:
+        days = extract_daily_plans(clean_markdown)
+    except ValidationError as exc:
+        raise ItineraryValidationError("The itinerary contains invalid day headings. Please revise it before exporting.") from exc
     duration = extract_duration_days(constraints.get("duration"))
     destination = str(constraints.get("destination") or "").strip()
     warnings: list[DocumentWarning] = [
@@ -337,23 +368,26 @@ def build_itinerary_document(
             code="MIXED_BUDGET_CURRENCIES",
             message="Budget lines use multiple currencies and are not summed into one total.",
         ))
-    document = ItineraryDocument(
-        thread_id=thread_id,
-        version=version,
-        title=title,
-        origin=str(constraints.get("origin") or "").strip() or None,
-        destinations=[destination] if destination else [],
-        duration_days=duration,
-        travel_dates=str(constraints.get("dates") or "").strip() or None,
-        traveler_count=_safe_positive_int(constraints.get("traveler_count")),
-        days=days,
-        budget=budget,
-        sources=_source_notes(evidence_store),
-        warnings=warnings,
-        approved=approved,
-        approved_at=datetime.now(timezone.utc).isoformat() if approved else None,
-        raw_markdown=clean_markdown,
-    )
+    try:
+        document = ItineraryDocument(
+            thread_id=thread_id,
+            version=version,
+            title=title,
+            origin=str(constraints.get("origin") or "").strip() or None,
+            destinations=[destination] if destination else [],
+            duration_days=duration,
+            travel_dates=str(constraints.get("dates") or "").strip() or None,
+            traveler_count=_safe_positive_int(constraints.get("traveler_count")),
+            days=days,
+            budget=budget,
+            sources=_source_notes(evidence_store),
+            warnings=warnings,
+            approved=approved,
+            approved_at=datetime.now(timezone.utc).isoformat() if approved else None,
+            raw_markdown=clean_markdown,
+        )
+    except ValidationError as exc:
+        raise ItineraryValidationError("The itinerary could not be validated for PDF export. Please revise it before exporting.") from exc
     if any(warning.severity == "error" for warning in document.warnings):
         # Keep the document inspectable, but prevent it becoming an export artifact.
         document.approved = False
@@ -377,7 +411,7 @@ def _safe_positive_int(value: Any) -> int | None:
         parsed = int(value)
     except (TypeError, ValueError):
         return None
-    return parsed if parsed > 0 else None
+    return parsed if 0 < parsed <= 50 else None
 
 
 def decimal_from_text(value: Any) -> Decimal | None:
