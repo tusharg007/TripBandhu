@@ -29,7 +29,12 @@ def create_database_pool(database_url: str, *, name: str) -> AsyncConnectionPool
             "row_factory": dict_row,
             "prepare_threshold": None,
             "connect_timeout": 10,
-            "options": "-c statement_timeout=15000",
+            # Do not send PostgreSQL startup ``options`` here. Neon pooled
+            # endpoints use PgBouncer transaction mode and reject startup
+            # parameters such as ``statement_timeout`` before a connection is
+            # established. Application/provider calls already have bounded
+            # asyncio timeouts, so compatibility is more important than a
+            # session-scoped statement setting.
         },
     )
 

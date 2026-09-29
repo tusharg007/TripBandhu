@@ -10,7 +10,7 @@ from pathlib import Path
 from project_config import PROJECT_ROOT
 
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 PUBLIC_SCHEMA_VERSION = "1"
 PDF_RENDERER_VERSION = "professional-reportlab-v2"
 PROVIDER_CONFIG_VERSION = "direct-provider-adapters-v1"

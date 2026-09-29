@@ -9,7 +9,7 @@
 [![Groq](https://img.shields.io/badge/Groq-GPT--OSS%2020B%20%2F%20120B-F55036?style=for-the-badge)](https://console.groq.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F4B942?style=for-the-badge)](LICENSE)
 
-> **Latest release:** `v1.1.0` — Direct Provider Reliability & Diagnostics
+> **Latest release:** `v1.1.1` — Resilient Itinerary Generation & Neon Pool Compatibility
 >
 > **Live demo:** [https://tripbandhu.onrender.com](https://tripbandhu.onrender.com) *(free tier — cold starts; local run is recommended)*
 
@@ -45,7 +45,7 @@ Approved plans are session-bound. With a reachable `DATABASE_URL`, documents and
 
 ### Render + Neon deployment
 
-Create a Neon PostgreSQL project, copy its direct connection string with TLS enabled (`sslmode=require`), and add it to the Render service as `DATABASE_URL`. The direct endpoint also supports the schema initialization performed on startup. Keep `REQUIRE_PERSISTENT_STORAGE=false` for the first deployment.
+Create a Neon PostgreSQL project, copy its pooled application connection string with TLS enabled (`sslmode=require`), and add it to the Render service as `DATABASE_URL`. TripBandhu disables server-side prepared statements and does not send session startup options, so the same code works with Neon's PgBouncer transaction pool and performs schema initialization safely. A direct Neon connection string remains supported. Keep `REQUIRE_PERSISTENT_STORAGE=false` for the first deployment.
 
 TripBandhu creates separate psycopg connection pools for LangGraph checkpoints and approved-plan/PDF storage. Each pool checks connections before handing them to a request, replaces disconnected idle connections, and releases connections between database operations. It keeps no minimum idle connections, closes excess idle connections after 60 seconds, and allows up to four connections per pool per worker. No database connection is held during LLM calls or human review. The app does not replay an entire agent run to recover an idle connection.
 
@@ -331,7 +331,7 @@ python -m eval.evaluator --postgres
 | `AVIATION_STACK_API_KEY` | Optional | — | Observed flight-status records (also accepted as `AVIATIONSTACK_API_KEY`) |
 | `OPENWEATHER_API_KEY` | Optional | — | Weather data |
 | `PROVIDER_TRANSPORT` | Optional | `direct` | `direct` for production HTTPS adapters; `mcp` only for compatibility diagnostics |
-| `DATABASE_URL` | Optional for memory mode; required for durable deployment | `""` | Neon or other PostgreSQL connection string; preserve TLS parameters such as `sslmode=require` |
+| `DATABASE_URL` | Optional for memory mode; required for durable deployment | `""` | Neon pooled application URL (recommended) or another PostgreSQL URL; preserve TLS parameters such as `sslmode=require` |
 | `SESSION_SIGNING_SECRET` | Recommended in production | Per-process random fallback | HMAC key for the browser's HttpOnly plan-session cookie; rotate intentionally |
 | `MAX_CONCURRENT_TRIPS` | Optional | `2` | Max active planning graph runs per app instance |
 | `SESSION_REQUEST_LIMIT` | Optional | `8` | New-trip requests allowed per browser session/window on an instance |
@@ -384,11 +384,11 @@ User Query
 
 ---
 
-## 📊 Verification Status (v1.1.0)
+## 📊 Verification Status (v1.1.1)
 
 | Suite | Result |
 | :--- | :--- |
-| Pytest regression | ✅ 152 fast unit/contract tests |
+| Pytest regression | ✅ 188 passed, 6 external-integration tests skipped when services are unavailable locally |
 | Benchmark FAST mode (49 cases) | ✅ 49 / 49 passed |
 | Live direct-provider diagnostic | ✅ AviationStack, Tavily, current weather, and daily forecast returned validated evidence |
 | Public deployment/PDF smoke | ✅ Build SHA, assets, ReportLab producer, attachment response, and PDF content verified |
@@ -405,14 +405,15 @@ User Query
 | :--- | :--- | :--- |
 | `[WinError 10013]` on startup | The selected port is already in use | Set `$env:PORT="9000"` |
 | `ModuleNotFoundError: mcp.server.fastmcp` | Compatibility MCP mode selected without its pinned runtime | Keep `PROVIDER_TRANSPORT=direct` for production; MCP mode is optional |
-| `413 Request too large` | Groq TPM limit exceeded | Fixed in v1.0.2 — final synthesis uses `gpt-oss-20b` |
+| `413 Request too large` during itinerary generation | Raw provider evidence plus requested output exceeded Groq's per-request/TPM allowance | Deploy v1.1.1: itinerary prompts use a bounded evidence digest, oversized requests immediately switch to the control model, and a complete conservative outline remains available if both models fail |
+| Neon reports `unsupported startup parameter in options: statement_timeout` | A pooled PgBouncer URL rejected a session startup option | Deploy v1.1.1; database pools no longer send that option and support both pooled and direct Neon URLs |
 | `No module named 'reportlab'` when downloading a PDF | Dependencies were installed from an older or malformed requirements file | Pull the latest code and run `pip install -r requirements.txt` in the active environment |
 | PDF says the approved plan is unavailable after an app restart | The service is running in intentional memory fallback because PostgreSQL is not reachable | Fix Render’s Neon `DATABASE_URL` and verify `/health/ready` reports `persistent_storage: true` |
 | `OperationalError: the connection is closed` before any agent runs | An older build retained one database connection after it disconnected | Deploy the connection-pool recovery fix; verify `checkpointer_ready` and `artifact_store.ready`, then test approval after an idle period |
 | Flights always "unavailable" | Missing key, endpoint access denial, timeout, or no route-matching records | Run the sanitized provider diagnostic and inspect its typed `error_code` and stage timing |
 | Hotels/weather show raw provider text | Provider evidence reached the UI without relevance and presentation layers | Hotel relevance filtering, safe weather normalization, and dedicated presentation passes now produce end-user Markdown |
 | Hotels show `DEGRADED` and Tavily reports HTTP `429` | Tavily rejected the live search because the API key exceeded its request-rate allowance | Wait briefly and start a new trip. If it happens frequently, check Tavily usage and use a production/PAYGO key; TripBandhu retries only a short provider-supplied `Retry-After` interval |
-| Final plan: "could not be generated" | Groq rate limit / TPM exceeded | Wait 1 min (TPM reset) then retry |
+| Final plan: "could not be generated" | An older build exhausted the itinerary model's Groq token allowance | Deploy v1.1.1; generation falls back across models and then to a complete verification-oriented outline instead of an empty plan |
 | LangSmith `403 Forbidden` or multipart ingest failures | Tracing key, workspace, or regional endpoint does not match | Keep `LANGSMITH_TRACING=false`, or configure the endpoint/workspace for the key before enabling tracing |
 | Browser still shows an older UI/PDF behavior | Cached static assets from an earlier deploy | Hard-refresh the page; deployed assets are commit-versioned |
 

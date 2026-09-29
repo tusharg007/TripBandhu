@@ -1188,18 +1188,144 @@ _ITINERARY_SYSTEM = (
 def _retry_with_control_model(exc: Exception) -> bool:
     """Use the separate control model for transient generation-model failures."""
     status = getattr(exc, "status_code", None)
+    message = str(exc).casefold()
     return (
         isinstance(exc, (TimeoutError, asyncio.TimeoutError))
-        or status == 429
+        or status in {413, 429}
         or isinstance(status, int) and status >= 500
         or "ratelimit" in type(exc).__name__.casefold()
-        or "429" in str(exc)
+        or "rate_limit" in message
+        or "rate limit" in message
+        or "request too large" in message
+        or "429" in message
+    )
+
+
+def _bounded_prompt_text(value: Any, limit: int) -> str:
+    """Bound prompt-only text at a clean line/word boundary."""
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    candidate = text[:limit]
+    boundary = max(candidate.rfind("\n"), candidate.rfind(". "), candidate.rfind(" "))
+    if boundary >= max(1, limit // 2):
+        candidate = candidate[:boundary]
+    return candidate.rstrip(" ,.;:") + "\n[Additional source detail omitted from the synthesis prompt.]"
+
+
+def _format_itinerary_evidence_context(evidence_store: dict[str, dict]) -> str:
+    """Create a bounded itinerary evidence digest without raw provider payloads."""
+    sections: list[str] = []
+
+    flight = _evidence_from_store(evidence_store, "FLIGHT_ROUTE_SEARCH")
+    if flight is not None:
+        data = flight.data if isinstance(flight.data, dict) else {}
+        routes = data.get("routes", [])
+        if isinstance(routes, dict):
+            routes = routes.get("data", [])
+        routes = routes if isinstance(routes, list) else []
+        airlines = sorted({
+            str((record.get("airline") or {}).get("name") or "").strip()
+            for record in routes if isinstance(record, dict)
+            if str((record.get("airline") or {}).get("name") or "").strip()
+        })[:6]
+        dates = sorted({
+            str(record.get("flight_date") or "").strip()
+            for record in routes if isinstance(record, dict) and record.get("flight_date")
+        })[:3]
+        sections.append(
+            "### Flight reference [PROVIDER_DATA - REFERENCE]\n"
+            f"- Status: {flight.status.value}; route: {data.get('origin') or 'origin'} to "
+            f"{data.get('destination') or 'destination'}; observed records: {len(routes)}.\n"
+            f"- Airlines represented: {', '.join(airlines) if airlines else 'not identified'}.\n"
+            f"- Observation dates: {', '.join(dates) if dates else 'not supplied'}.\n"
+            "- These are route/status references, not future availability or live fares."
+        )
+
+    hotels = _evidence_from_store(evidence_store, "HOTEL_WEB_RESEARCH")
+    if hotels is not None:
+        items = hotels.data if isinstance(hotels.data, list) else []
+        hotel_lines: list[str] = []
+        for item in items[:5]:
+            if not isinstance(item, dict):
+                continue
+            title = _bounded_prompt_text(item.get("title") or "Accommodation source", 120)
+            snippet = _bounded_prompt_text(item.get("snippet") or "", 260)
+            hotel_lines.append(f"- [WEB_SOURCE] {title}: {snippet or 'Verify location and rate before booking.'}")
+        sections.append(
+            "### Accommodation references [WEB_SOURCE]\n" + (
+                "\n".join(hotel_lines)
+                if hotel_lines else "- No specific property evidence was available; keep recommendations general."
+            )
+        )
+
+    weather = _evidence_from_store(evidence_store, "WEATHER_FORECAST")
+    if weather is not None:
+        sections.append(
+            "### Weather [PROVIDER_DATA]\n"
+            f"- Status: {weather.status.value}.\n"
+            f"{_bounded_prompt_text(weather.summary, 1200)}"
+        )
+
+    if not sections:
+        return "No external provider evidence was retrieved. Keep all advice general and verification-oriented."
+    return _bounded_prompt_text("\n\n".join(sections), 6000)
+
+
+def _deterministic_itinerary_fallback(state: TravelState) -> str:
+    """Return a complete, conservative itinerary outline when both LLMs fail."""
+    constraints = state.get("trip_constraints") or {}
+    days = _duration_days(state)
+    origin = str(constraints.get("origin") or "Delhi")
+    destination = str(constraints.get("destination") or "your destination")
+    style = str(constraints.get("travel_style") or constraints.get("budget") or "mid-range")
+    raw_preferences = constraints.get("special_preferences") or []
+    if isinstance(raw_preferences, str):
+        preferences = raw_preferences
+    else:
+        preferences = ", ".join(str(item) for item in raw_preferences if str(item).strip())
+    preferences = preferences or "the traveller's stated interests"
+    middle_templates = (
+        "Choose one central cultural district for a guided or self-guided visit; reserve the afternoon for a local market and a verified restaurant near the hotel.",
+        "Visit one major museum or heritage site after checking its opening day; use the evening for a neighborhood food walk or cooking experience.",
+        "Plan a slower neighborhood day with local transit, independent shops, and regional cuisine; keep one indoor alternative for poor weather.",
+        "Take an optional day trip only after confirming travel time and the last return service; otherwise use this as an additional city culture day.",
+        "Keep a flexible culture-and-food day for the highest-priority activity that requires advance booking, followed by souvenir shopping and an early dinner.",
+    )
+    day_sections: list[str] = []
+    for day in range(1, days + 1):
+        if day == 1:
+            body = (
+                f"Travel from {origin} to {destination}; allow time for immigration, baggage, and the hotel transfer. "
+                "After check-in, take only a short orientation walk and eat near the accommodation."
+            )
+        elif day == days:
+            body = (
+                "Check out, leave luggage securely if needed, and keep the final activity close to the departure route. "
+                f"Travel back toward {origin} with a conservative airport or station buffer."
+            )
+        else:
+            body = middle_templates[(day - 2) % len(middle_templates)]
+        day_sections.append(f"### Day {day}\n\n- {body}")
+
+    return (
+        f"## {days}-Day {destination} Planning Outline\n\n"
+        "**Resilient fallback itinerary:** the live itinerary model was unavailable, so this complete outline "
+        "avoids inventing venue names, opening hours, prices, or reservations. Replace general activity slots "
+        "with verified choices before booking.\n\n"
+        f"**Style:** {style}  \n**Preferences:** {preferences}\n\n"
+        + "\n\n".join(day_sections)
+        + "\n\n## Before you book\n\n"
+        "- Verify flight schedules and fares directly with an airline or trusted booking provider.\n"
+        "- Confirm hotel address, cancellation terms, and neighborhood transport.\n"
+        "- Check current opening days, ticket requirements, local weather, and travel advisories.\n"
+        "- Keep a contingency allowance and do not treat model estimates as live quotations."
     )
 
 
 async def itinerary_agent(state: TravelState):
     statuses = dict(state.get("specialist_statuses", {}))
-    evidence_context = format_grounded_evidence_context(state.get("evidence_store", {}))
+    evidence_context = _format_itinerary_evidence_context(state.get("evidence_store", {}))
     llm_token_usage = dict(state.get("llm_token_usage", {}))
 
     prompt = (
@@ -1207,7 +1333,7 @@ async def itinerary_agent(state: TravelState):
         f"User Query:\n{state['user_query']}\n\n"
         f"Trip Constraints:\n{state.get('trip_constraints', {})}\n\n"
         f"Grounded Evidence & Provenance:\n{evidence_context}\n\n"
-        f"Budget Analysis:\n{state.get('budget_results', '')}\n\n"
+        f"Budget Analysis:\n{_bounded_prompt_text(state.get('budget_results', ''), 5000)}\n\n"
         "Make the itinerary practical, budget-aware, and ready for human review. "
         "Include all requested days and finish the complete plan."
     )
@@ -1236,12 +1362,13 @@ async def itinerary_agent(state: TravelState):
         )
     except Exception as exc:
         print(f"[itinerary_agent] LLM call failed (type={type(exc).__name__}).", flush=True)
-        statuses["itinerary_agent"] = "DEGRADED"
-        itinerary_content = _ITINERARY_FAILURE_SENTINEL
+        itinerary_content = _deterministic_itinerary_fallback(state)
+        statuses["itinerary_agent"] = "COMPLETED"
         llm_calls = state.get("llm_calls", 0)
-        # PHASE 6: Do NOT set approval_request when DEGRADED — route_after_itinerary
-        # will bypass human_review and send the run directly to itinerary_degraded_agent.
-        approval_request = ""
+        approval_request = (
+            "The itinerary provider was unavailable, so a conservative complete outline was created. "
+            "Please review it, approve it, or request more specific revisions."
+        )
 
     return {
         "itinerary": itinerary_content,

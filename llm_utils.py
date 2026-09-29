@@ -43,6 +43,22 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     )
 
 
+def _is_oversized_request_error(exc: Exception) -> bool:
+    """Return True when a provider rejects one request before generation.
+
+    Groq can report an oversized token request as HTTP 413 while using the
+    ``rate_limit_exceeded`` error code. Retrying the identical request cannot
+    succeed, so callers should immediately use their smaller-model or
+    deterministic fallback.
+    """
+    message = str(exc).casefold()
+    return (
+        getattr(exc, "status_code", None) == 413
+        or "request too large" in message
+        or "payload too large" in message
+    )
+
+
 def _get_retry_after(exc: Exception) -> int | None:
     """
     Extract Retry-After seconds from a rate-limit exception, if available.
@@ -161,6 +177,14 @@ async def invoke_llm(
         except Exception as exc:
             if not _is_rate_limit_error(exc):
                 # Non-rate-limit error: propagate immediately to calling agent's handler
+                raise
+
+            if _is_oversized_request_error(exc):
+                print(
+                    f"[invoke_llm:{task_name}] Provider rejected an oversized request; "
+                    "skipping an identical retry so the caller can use its fallback.",
+                    flush=True,
+                )
                 raise
 
             retry_after = _get_retry_after(exc)
